@@ -1,0 +1,75 @@
+swagger: "2.0"
+info:
+  title: tisane-relay-gateway
+  version: "1.0.0"
+schemes:
+  - https
+consumes:
+  - application/json
+produces:
+  - application/json
+
+paths:
+  /health:
+    get:
+      operationId: healthGet
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      responses:
+        "200":
+          description: OK
+
+  /relay/push:
+    post:
+      operationId: relayPush
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      parameters:
+        - in: body
+          name: events
+          required: true
+          schema:
+            type: array
+            items:
+              type: object
+              required:
+                - event_id
+                - author_pubkey
+                - signature
+              properties:
+                event_id:
+                  type: string
+                  format: uuid
+                author_pubkey:
+                  type: string
+                  description: Hex-encoded Ed25519 public key (64 hex chars)
+                  example: "d64315263a2c445caf75790784b4e913bc1915223a2c445caf75790784b4e913"
+                signature:
+                  type: string
+                  description: Hex-encoded Ed25519 signature (128 hex chars)
+                  example: "e64a8b7..."
+                payload_json:
+                  type: object
+                  description: Event payload to be hashed and signed
+                  example:
+                    type: "message"
+                    text: "Hello World"
+      responses:
+        "200":
+          description: OK
+        "401":
+          description: Unauthorized - Invalid signature
+        "400":
+          description: Bad Request - Missing required fields or invalid hex
+
+  /relay/pull:
+    get:
+      operationId: relayPull
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      responses:
+        "200":
+          description: OK

@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  tisane-relay:
+    build: .
+    restart: always
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - RELAY_ID=${RELAY_ID}
+      - PORT=8080
+      - RUST_LOG=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - tisane-net
+
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - tisane-pg-data:/var/lib/postgresql/data
+    networks:
+      - tisane-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  tisane-net:
+    driver: bridge
+
+volumes:
+  tisane-pg-data:

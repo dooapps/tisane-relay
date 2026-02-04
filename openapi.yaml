@@ -1,0 +1,3 @@
+# openapi.yaml moved to infra/openapi.yaml
+# To update the gateway, use scripts/update_gateway.sh (see README.md)
+# This file is intentionally left as a pointer to the real OpenAPI at infra/openapi.yaml

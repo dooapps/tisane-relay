@@ -9,18 +9,6 @@ consumes:
 produces:
   - application/json
 
-securityDefinitions:
-  firebase:
-    authorizationUrl: ""
-    flow: "implicit"
-    type: "oauth2"
-    x-google-issuer: "https://securetoken.google.com/ledit-1f375"
-    x-google-jwks_uri: "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com"
-    x-google-audiences: "ledit-1f375"
-
-security:
-  - firebase: []
-
 paths:
   /health:
     get:
@@ -38,9 +26,43 @@ paths:
       x-google-backend:
         address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
         protocol: "h2"
+      parameters:
+        - in: body
+          name: events
+          required: true
+          schema:
+            type: array
+            items:
+              type: object
+              required:
+                - event_id
+                - author_pubkey
+                - signature
+              properties:
+                event_id:
+                  type: string
+                  format: uuid
+                author_pubkey:
+                  type: string
+                  description: Hex-encoded Ed25519 public key (64 hex chars)
+                  example: "d64315263a2c445caf75790784b4e913bc1915223a2c445caf75790784b4e913"
+                signature:
+                  type: string
+                  description: Hex-encoded Ed25519 signature (128 hex chars)
+                  example: "e64a8b7..."
+                payload_json:
+                  type: object
+                  description: Event payload to be hashed and signed
+                  example:
+                    type: "message"
+                    text: "Hello World"
       responses:
         "200":
           description: OK
+        "401":
+          description: Unauthorized - Invalid signature
+        "400":
+          description: Bad Request - Missing required fields or invalid hex
 
   /relay/pull:
     get:

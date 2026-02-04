@@ -1,11 +1,26 @@
-version: '3.8'
-
 services:
+  caddy:
+    image: caddy:alpine
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN_NAME=${DOMAIN_NAME}
+      - ACME_EMAIL=${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - tisane-relay
+    networks:
+      - tisane-net
+
   tisane-relay:
     build: .
     restart: always
-    ports:
-      - "${PORT:-8080}:8080"
+    # Ports removed: only accessible via Caddy
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - RELAY_ID=${RELAY_ID}
@@ -29,7 +44,7 @@ services:
     networks:
       - tisane-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -40,3 +55,5 @@ networks:
 
 volumes:
   tisane-pg-data:
+  caddy_data:
+  caddy_config:

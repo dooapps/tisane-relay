@@ -131,6 +131,50 @@ async fn validate_and_insert(pool: &PgPool, mut events: Vec<db::EventInput>) -> 
 }
 
 async fn push_handler(State(state): State<AppState>, Json(events): Json<Vec<db::EventInput>>) -> impl IntoResponse {
+    const MAX_BATCH_SIZE: usize = 100;
+    if events.len() > MAX_BATCH_SIZE {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "batch size exceeds limit (100)"}))).into_response();
+    }
+    // Validation Logic for Value Protocol
+    for ev in &events {
+        if let Some(etype) = &ev.event_type {
+            match etype.as_str() {
+                "read.completed" | "derivative.created" | "citation.created" | "value.snapshot" => {
+                    // Strong validation for Value Protocol events
+                    if let Some(payload) = &ev.payload_json {
+                        let has_content_id = payload.get("content_id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.is_empty())
+                            .unwrap_or(false);
+                        
+                        if !has_content_id {
+                             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                                 "error": format!("missing or empty content_id for event type '{}'", etype)
+                             }))).into_response();
+                        }
+
+                        // Additional validation for value.snapshot
+                        if etype == "value.snapshot" {
+                            let has_window = payload.get("window_start").is_some() && payload.get("window_end").is_some();
+                            if !has_window {
+                                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                                    "error": "missing window_start or window_end for value.snapshot"
+                                }))).into_response();
+                            }
+                        }
+                    } else {
+                         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                             "error": format!("missing payload for event type '{}'", etype)
+                         }))).into_response();
+                    }
+                },
+                _ => {
+                    // Legacy/Other events: Accepted without strict schema validation (as per requirements)
+                }
+            }
+        }
+    }
+
     match validate_and_insert(&state.pool, events).await {
         Ok(inserted) => (StatusCode::OK, Json(serde_json::json!({"inserted": inserted.len()}))).into_response(),
         Err((code, msg)) => (code, Json(serde_json::json!({"error": msg}))).into_response(),

@@ -6,10 +6,11 @@ use chrono::{DateTime, Duration, Utc};
 use crate::{
     db::{AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery},
     distillery_bridge::{
-        AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
-        AuthorRankingResponse, AuthorSignals, CandidateSignals, DistributionRequest,
-        DistributionResponse, RankingRequest, RankingResponse, distribute, distribute_authors,
-        rank, rank_authors,
+        AttentionDistributionRequest, AttentionDistributionResponse, AuthorDistributionRequest,
+        AuthorDistributionResponse, AuthorRankingRequest, AuthorRankingResponse, AuthorSignals,
+        CandidateSignals, DistributionRequest, DistributionResponse, RankingRequest,
+        RankingResponse, distribute, distribute_attention, distribute_authors, rank,
+        rank_authors,
     },
     storage::CandidateSignalStore,
 };
@@ -26,6 +27,8 @@ pub struct DistilleryEventQuery {
 #[derive(Debug, Clone)]
 pub struct DistributionPolicy {
     pub slot_count: usize,
+    pub min_content_slots: usize,
+    pub min_author_slots: usize,
     pub max_per_author: usize,
     pub max_per_channel: usize,
 }
@@ -91,6 +94,26 @@ impl DistilleryFeedService {
             account_id: query.account_id,
             slot_count: policy.slot_count,
             max_per_channel: policy.max_per_channel,
+            authors,
+        }))
+    }
+
+    pub async fn attention_from_events(
+        &self,
+        query: DistilleryEventQuery,
+        policy: DistributionPolicy,
+    ) -> Result<AttentionDistributionResponse> {
+        let candidates = self.load_candidates(&query).await?;
+        let authors = self.load_authors(&query).await?;
+        Ok(distribute_attention(AttentionDistributionRequest {
+            surface: query.surface,
+            account_id: query.account_id,
+            slot_count: policy.slot_count,
+            min_content_slots: policy.min_content_slots,
+            min_author_slots: policy.min_author_slots,
+            max_per_author: policy.max_per_author,
+            max_per_channel: policy.max_per_channel,
+            candidates,
             authors,
         }))
     }
@@ -170,6 +193,8 @@ fn freshness_hours(last_signal_at: DateTime<Utc>) -> f64 {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use crate::distillery_bridge::AttentionItem;
 
     use super::*;
 
@@ -418,6 +443,8 @@ mod tests {
                 },
                 DistributionPolicy {
                     slot_count: 2,
+                    min_content_slots: 0,
+                    min_author_slots: 0,
                     max_per_author: 1,
                     max_per_channel: 1,
                 },
@@ -428,5 +455,63 @@ mod tests {
         assert_eq!(response.slots.len(), 2);
         assert_eq!(response.slots[0].item.author_id, "author-a");
         assert_eq!(response.slots[1].item.author_id, "author-c");
+    }
+
+    #[tokio::test]
+    async fn distributes_mixed_attention_through_application_service() {
+        let service = DistilleryFeedService::new(Arc::new(FakeCandidateSignalStore {
+            candidates: vec![
+                AggregatedCandidate {
+                    candidate_id: "content-a".to_string(),
+                    author_id: Some("author-a".to_string()),
+                    channel: Some("essays".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(1),
+                    read_completed: 2,
+                    citation_created: 1,
+                    derivative_created: 0,
+                    value_snapshot: 0.5,
+                },
+                AggregatedCandidate {
+                    candidate_id: "content-b".to_string(),
+                    author_id: Some("author-b".to_string()),
+                    channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(2),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+            ],
+        }));
+
+        let response = service
+            .attention_from_events(
+                DistilleryEventQuery {
+                    surface: Some("home".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                    channel: None,
+                    since_hours: None,
+                    limit: 50,
+                },
+                DistributionPolicy {
+                    slot_count: 2,
+                    min_content_slots: 1,
+                    min_author_slots: 1,
+                    max_per_author: 2,
+                    max_per_channel: 2,
+                },
+            )
+            .await
+            .expect("service should distribute mixed attention");
+
+        assert_eq!(response.slots.len(), 2);
+        assert!(response.slots.iter().any(|slot| matches!(
+            slot.item,
+            AttentionItem::Candidate(_)
+        )));
+        assert!(response.slots.iter().any(|slot| matches!(
+            slot.item,
+            AttentionItem::Author(_)
+        )));
     }
 }

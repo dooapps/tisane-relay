@@ -19,12 +19,14 @@ use tisane_relay::AppState;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
-    AuthorDistributionResponse, AuthorRankingResponse, DistributionResponse, RankingResponse,
+    AttentionDistributionResponse, AttentionItem, AuthorDistributionResponse,
+    AuthorRankingResponse, DistributionResponse, RankingResponse, attention_handler,
     distribute_authors_handler, distribute_handler, rank_authors_handler, rank_handler,
 };
 use tisane_relay::distillery_runtime::{
-    EventAuthorDistributionRequest, EventAuthorRankingRequest, EventDistributionRequest,
-    EventRankingRequest, FeedFromEventsRequest, discover_authors_from_events_handler,
+    EventAttentionDistributionRequest, EventAuthorDistributionRequest,
+    EventAuthorRankingRequest, EventDistributionRequest, EventRankingRequest,
+    FeedFromEventsRequest, attention_from_events_handler, discover_authors_from_events_handler,
     distribute_authors_from_events_handler, distribute_from_events_handler,
     feed_from_events_handler, rank_authors_from_events_handler, rank_from_events_handler,
 };
@@ -385,6 +387,73 @@ async fn test_distillery_distribute_endpoint() {
     assert_eq!(payload.slots.len(), 2);
     assert_eq!(payload.slots[0].item.candidate_id, "author-a-strong");
     assert_eq!(payload.slots[1].item.candidate_id, "author-b-alt");
+}
+
+#[tokio::test]
+async fn test_distillery_attention_endpoint() {
+    let app = Router::new().route("/distillery/attention", post(attention_handler));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/attention")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface": "home",
+                        "account_id": "acct-1",
+                        "slot_count": 2,
+                        "min_content_slots": 1,
+                        "min_author_slots": 1,
+                        "max_per_author": 2,
+                        "max_per_channel": 2,
+                        "candidates": [
+                            {
+                                "candidate_id": "content-a",
+                                "author_id": "author-a",
+                                "channel": "essays",
+                                "freshness_hours": 1.0,
+                                "read_completed": 2,
+                                "citation_created": 1,
+                                "derivative_created": 1,
+                                "value_snapshot": 1.0
+                            }
+                        ],
+                        "authors": [
+                            {
+                                "author_id": "author-b",
+                                "primary_channel": "briefs",
+                                "freshness_hours": 1.0,
+                                "unique_content_count": 3,
+                                "read_completed": 1,
+                                "citation_created": 1,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.5
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: AttentionDistributionResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.slots.len(), 2);
+    assert!(payload
+        .slots
+        .iter()
+        .any(|slot| matches!(slot.item, AttentionItem::Candidate(_))));
+    assert!(payload
+        .slots
+        .iter()
+        .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
 }
 
 #[tokio::test]
@@ -759,6 +828,71 @@ async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
     assert_eq!(payload.slots.len(), 2);
     assert_eq!(payload.slots[0].item.candidate_id, "content-a");
     assert_eq!(payload.slots[1].item.candidate_id, "content-b");
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_attention_from_events_endpoint() -> anyhow::Result<()> {
+    let Some(database_url) = get_database_url() else {
+        eprintln!("Skipping test_attention_from_events_endpoint because DATABASE_URL is not set.");
+        return Ok(());
+    };
+    let pool = connect_test_pool(&database_url).await?;
+
+    db::run_migrations(&pool).await?;
+    sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
+
+    seed_value_protocol_events(&pool).await?;
+
+    let app = Router::new()
+        .route(
+            "/distillery/attention-from-events",
+            post(attention_from_events_handler),
+        )
+        .with_state(AppState::new(pool, Uuid::new_v4()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/attention-from-events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&EventAttentionDistributionRequest {
+                        surface: Some("home".to_string()),
+                        account_id: Some("acct-1".to_string()),
+                        channel: None,
+                        slot_count: 2,
+                        min_content_slots: 1,
+                        min_author_slots: 1,
+                        max_per_author: 2,
+                        max_per_channel: 2,
+                        since_hours: None,
+                        limit: 50,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: AttentionDistributionResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.slots.len(), 2);
+    assert!(payload
+        .slots
+        .iter()
+        .any(|slot| matches!(slot.item, AttentionItem::Candidate(_))));
+    assert!(payload
+        .slots
+        .iter()
+        .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
 
     Ok(())
 }

@@ -14,6 +14,7 @@ use ed25519_dalek::SigningKey;
 use infusion::infusion::cid::cid_blake3;
 use infusion::infusion::sign;
 use rand::{RngCore, thread_rng};
+use serial_test::serial;
 use tisane_relay::AppState;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
@@ -42,6 +43,7 @@ fn generate_signing_key() -> SigningKey {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_push_then_pull() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_push_then_pull because DATABASE_URL is not set.");
@@ -93,6 +95,7 @@ async fn test_push_then_pull() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_dedup() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_dedup because DATABASE_URL is not set.");
@@ -260,6 +263,7 @@ async fn test_distillery_distribute_endpoint() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_aggregate_candidate_signals() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_aggregate_candidate_signals because DATABASE_URL is not set.");
@@ -359,6 +363,7 @@ async fn test_aggregate_candidate_signals() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_rank_from_events_endpoint because DATABASE_URL is not set.");
@@ -411,6 +416,7 @@ async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_distribute_from_events_endpoint because DATABASE_URL is not set.");
@@ -467,6 +473,7 @@ async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_feed_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_feed_from_events_endpoint because DATABASE_URL is not set.");
@@ -523,6 +530,7 @@ async fn test_feed_from_events_endpoint() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!(

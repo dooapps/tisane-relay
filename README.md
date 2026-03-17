@@ -82,6 +82,20 @@ This exercises:
 
 If Docker is unavailable, the script automatically falls back to `serve-distillery`.
 
+### Phase 3 Validation
+
+For a full local validation of the current Postgres path:
+
+```bash
+./scripts/test_local.sh
+```
+
+For an `EXPLAIN ANALYZE` of the canonical feed aggregation with synthetic load:
+
+```bash
+./scripts/explain_feed_query.sh
+```
+
 ## Event-Derived Distillery Endpoints
 
 When the relay is running with Postgres, the primary Distillery flow can derive

@@ -16,16 +16,8 @@ if docker info >/dev/null 2>&1; then
   docker compose up -d postgres
 
   echo "Waiting for Postgres..."
-  for i in {1..60}; do
-    if command -v pg_isready >/dev/null 2>&1; then
-      pg_isready -h 127.0.0.1 -p 5432 -U test >/dev/null 2>&1 && break
-    elif command -v psql >/dev/null 2>&1; then
-      PGPASSWORD=test psql -h 127.0.0.1 -U test -c '\q' >/dev/null 2>&1 && break
-    else
-      (echo > /dev/tcp/127.0.0.1/5432) >/dev/null 2>&1 && break || true
-    fi
-    sleep 1
-  done
+  export PGPASSWORD=test
+  ./scripts/wait_for_postgres.sh 127.0.0.1 5432 test 60
 else
   echo "Docker daemon indisponivel. Usando serve-distillery para smoke test local."
 fi

@@ -50,6 +50,26 @@ pub struct Peer {
     pub health: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AggregatedCandidate {
+    pub candidate_id: String,
+    pub author_id: Option<String>,
+    pub channel: Option<String>,
+    pub read_completed: i64,
+    pub citation_created: i64,
+    pub derivative_created: i64,
+    pub value_snapshot: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CandidateAggregationQuery {
+    pub since: Option<DateTime<Utc>>,
+    pub surface: Option<String>,
+    pub account_id: Option<String>,
+    pub channel: Option<String>,
+    pub limit: i64,
+}
+
 pub async fn insert_events(pool: &PgPool, events: &[EventInput]) -> Result<Vec<i64>, sqlx::Error> {
     let mut inserted = Vec::new();
 
@@ -78,7 +98,11 @@ pub async fn insert_events(pool: &PgPool, events: &[EventInput]) -> Result<Vec<i
     Ok(inserted)
 }
 
-pub async fn fetch_events_since(pool: &PgPool, since: i64, limit: i64) -> Result<(Vec<Event>, i64), sqlx::Error> {
+pub async fn fetch_events_since(
+    pool: &PgPool,
+    since: i64,
+    limit: i64,
+) -> Result<(Vec<Event>, i64), sqlx::Error> {
     let rows = sqlx::query("SELECT event_id, server_seq, author_pubkey, signature, payload_hash, device_id, author_id, content_id, event_type, payload_json, occurred_at, lamport FROM events WHERE server_seq > $1 ORDER BY server_seq ASC LIMIT $2")
         .bind(since)
         .bind(limit)
@@ -119,24 +143,34 @@ pub async fn fetch_healthy_peers(pool: &PgPool) -> Result<Vec<Peer>, sqlx::Error
 
 // Fetch all peers (for admin listing)
 pub async fn fetch_all_peers(pool: &PgPool) -> Result<Vec<Peer>, sqlx::Error> {
-    sqlx::query_as::<_, Peer>("SELECT peer_id, url, shared_secret, last_cursor_time, last_cursor_id, health FROM peers")
-        .fetch_all(pool)
-        .await
+    sqlx::query_as::<_, Peer>(
+        "SELECT peer_id, url, shared_secret, last_cursor_time, last_cursor_id, health FROM peers",
+    )
+    .fetch_all(pool)
+    .await
 }
 
 // Add a new peer
-pub async fn add_peer(pool: &PgPool, url: String, shared_secret: String) -> Result<Uuid, sqlx::Error> {
+pub async fn add_peer(
+    pool: &PgPool,
+    url: String,
+    shared_secret: String,
+) -> Result<Uuid, sqlx::Error> {
     let peer_id = Uuid::new_v4();
     // Default to UNIX epoch to avoid 'infinity' parsing issues in chrono
-    let default_time = DateTime::parse_from_rfc3339("1970-01-01T00:00:00Z").unwrap().with_timezone(&Utc);
-    
-    sqlx::query("INSERT INTO peers (peer_id, url, shared_secret, last_cursor_time) VALUES ($1, $2, $3, $4)")
-        .bind(peer_id)
-        .bind(url)
-        .bind(shared_secret)
-        .bind(default_time)
-        .execute(pool)
-        .await?;
+    let default_time = DateTime::parse_from_rfc3339("1970-01-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+
+    sqlx::query(
+        "INSERT INTO peers (peer_id, url, shared_secret, last_cursor_time) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(peer_id)
+    .bind(url)
+    .bind(shared_secret)
+    .bind(default_time)
+    .execute(pool)
+    .await?;
     Ok(peer_id)
 }
 
@@ -158,7 +192,12 @@ pub async fn validate_peer_token(pool: &PgPool, token: &str) -> Result<Option<Pe
 }
 
 // Update cursor for a peer
-pub async fn update_peer_cursor(pool: &PgPool, peer_id: Uuid, last_time: DateTime<Utc>, last_id: Uuid) -> Result<(), sqlx::Error> {
+pub async fn update_peer_cursor(
+    pool: &PgPool,
+    peer_id: Uuid,
+    last_time: DateTime<Utc>,
+    last_id: Uuid,
+) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE peers SET last_cursor_time = $1, last_cursor_id = $2, updated_at = NOW() WHERE peer_id = $3")
         .bind(last_time)
         .bind(last_id)
@@ -169,11 +208,16 @@ pub async fn update_peer_cursor(pool: &PgPool, peer_id: Uuid, last_time: DateTim
 }
 
 // Fetch events for replication (since time,id)
-pub async fn fetch_replication_batch(pool: &PgPool, last_time: DateTime<Utc>, last_id: Uuid, limit: i64) -> Result<Vec<Event>, sqlx::Error> {
+pub async fn fetch_replication_batch(
+    pool: &PgPool,
+    last_time: DateTime<Utc>,
+    last_id: Uuid,
+    limit: i64,
+) -> Result<Vec<Event>, sqlx::Error> {
     // Composite cursor Logic:
     // (occurred_at, event_id) > (last_time, last_id)
     // equiv to: occurred_at > last_time OR (occurred_at = last_time AND event_id > last_id)
-    
+
     let rows = sqlx::query("SELECT event_id, server_seq, author_pubkey, signature, payload_hash, device_id, author_id, content_id, event_type, payload_json, occurred_at, lamport FROM events WHERE (occurred_at > $1) OR (occurred_at = $1 AND event_id > $2) ORDER BY occurred_at ASC, event_id ASC LIMIT $3")
         .bind(last_time)
         .bind(last_id)
@@ -181,24 +225,80 @@ pub async fn fetch_replication_batch(pool: &PgPool, last_time: DateTime<Utc>, la
         .fetch_all(pool)
         .await?;
 
-        let mut events = Vec::with_capacity(rows.len());
-        for row in rows.iter() {
-            let event = Event {
-                event_id: row.get::<Uuid, _>("event_id"),
-                server_seq: row.get::<i64, _>("server_seq"),
-                author_pubkey: row.get::<String, _>("author_pubkey"),
-                signature: row.get::<String, _>("signature"),
-                payload_hash: row.get::<String, _>("payload_hash"),
-                device_id: row.get::<Option<String>, _>("device_id"),
-                author_id: row.get::<Option<String>, _>("author_id"),
-                content_id: row.get::<Option<String>, _>("content_id"),
-                event_type: row.get::<Option<String>, _>("event_type"),
-                payload_json: row.get::<Option<serde_json::Value>, _>("payload_json"),
-                occurred_at: row.get::<Option<DateTime<Utc>>, _>("occurred_at"),
-                lamport: row.get::<Option<i64>, _>("lamport"),
-            };
-            events.push(event);
-        }
+    let mut events = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        let event = Event {
+            event_id: row.get::<Uuid, _>("event_id"),
+            server_seq: row.get::<i64, _>("server_seq"),
+            author_pubkey: row.get::<String, _>("author_pubkey"),
+            signature: row.get::<String, _>("signature"),
+            payload_hash: row.get::<String, _>("payload_hash"),
+            device_id: row.get::<Option<String>, _>("device_id"),
+            author_id: row.get::<Option<String>, _>("author_id"),
+            content_id: row.get::<Option<String>, _>("content_id"),
+            event_type: row.get::<Option<String>, _>("event_type"),
+            payload_json: row.get::<Option<serde_json::Value>, _>("payload_json"),
+            occurred_at: row.get::<Option<DateTime<Utc>>, _>("occurred_at"),
+            lamport: row.get::<Option<i64>, _>("lamport"),
+        };
+        events.push(event);
+    }
 
     Ok(events)
+}
+
+pub async fn aggregate_candidate_signals(
+    pool: &PgPool,
+    query: &CandidateAggregationQuery,
+) -> Result<Vec<AggregatedCandidate>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"
+        SELECT
+            COALESCE(content_id, payload_json->>'content_id') AS candidate_id,
+            MAX(author_id) AS author_id,
+            MAX(payload_json->>'channel') AS channel,
+            COALESCE(SUM(CASE WHEN event_type = 'read.completed' THEN 1 ELSE 0 END), 0) AS read_completed,
+            COALESCE(SUM(CASE WHEN event_type = 'citation.created' THEN 1 ELSE 0 END), 0) AS citation_created,
+            COALESCE(SUM(CASE WHEN event_type = 'derivative.created' THEN 1 ELSE 0 END), 0) AS derivative_created,
+            COALESCE(MAX(
+                CASE
+                    WHEN event_type = 'value.snapshot'
+                    THEN NULLIF(payload_json->>'score', '')::double precision
+                    ELSE NULL
+                END
+            ), 0.0) AS value_snapshot
+        FROM events
+        WHERE COALESCE(content_id, payload_json->>'content_id') IS NOT NULL
+          AND event_type IN ('read.completed', 'citation.created', 'derivative.created', 'value.snapshot')
+          AND ($1::timestamptz IS NULL OR occurred_at >= $1)
+          AND ($2::text IS NULL OR payload_json->>'surface' = $2)
+          AND ($3::text IS NULL OR payload_json->>'account_id' = $3)
+          AND ($4::text IS NULL OR payload_json->>'channel' = $4)
+        GROUP BY COALESCE(content_id, payload_json->>'content_id')
+        ORDER BY MAX(occurred_at) DESC, candidate_id ASC
+        LIMIT $5
+        "#,
+    )
+    .bind(query.since)
+    .bind(query.surface.as_deref())
+    .bind(query.account_id.as_deref())
+    .bind(query.channel.as_deref())
+    .bind(query.limit)
+    .fetch_all(pool)
+    .await?;
+
+    let mut candidates = Vec::with_capacity(rows.len());
+    for row in rows {
+        candidates.push(AggregatedCandidate {
+            candidate_id: row.get::<String, _>("candidate_id"),
+            author_id: row.get::<Option<String>, _>("author_id"),
+            channel: row.get::<Option<String>, _>("channel"),
+            read_completed: row.get::<i64, _>("read_completed"),
+            citation_created: row.get::<i64, _>("citation_created"),
+            derivative_created: row.get::<i64, _>("derivative_created"),
+            value_snapshot: row.get::<f64, _>("value_snapshot"),
+        });
+    }
+
+    Ok(candidates)
 }

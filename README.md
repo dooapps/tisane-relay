@@ -46,5 +46,55 @@ DATABASE_URL=postgres://user:pass@localhost:5432/db cargo test
 
 ```bash
 cargo build
-PORT=8080 DATABASE_URL=... ./target/debug/tisane-relay
+PORT=8080 DATABASE_URL=... ./target/debug/tisane-relay serve --port 8080 --database-url ...
 ```
+
+### Distillery-Only Dev Mode
+
+For local algorithm work without Postgres:
+
+```bash
+cargo run -- serve-distillery --port 8080
+```
+
+### Manual Smoke Test
+
+For a local end-to-end run with Postgres + relay + Distillery endpoints:
+
+```bash
+./scripts/manual_test.sh
+```
+
+This exercises:
+
+- `GET /health`
+- `POST /distillery/rank`
+- `POST /distillery/distribute`
+
+If Docker is unavailable, the script automatically falls back to `serve-distillery`.
+
+## Event-Derived Distillery Endpoints
+
+When the relay is running with Postgres, the primary Distillery flow can derive
+candidate signals from the relay ledger instead of receiving pre-aggregated
+counters from the client. This keeps ranking/distribution decisions inside the
+relay + Distillery boundary.
+
+Endpoints:
+
+- `POST /distillery/feed-from-events`
+- `POST /distillery/rank-from-events`
+- `POST /distillery/distribute-from-events`
+
+Supported filters:
+
+- `surface`
+- `account_id`
+- `channel`
+- `since_hours`
+- `limit`
+
+`/distillery/feed-from-events` is the canonical feed endpoint for the current
+phase. It aggregates `read.completed`, `citation.created`, `derivative.created`
+and `value.snapshot` from the relay ledger, ranks the resulting candidates and
+returns distributed slots.

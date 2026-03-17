@@ -14,7 +14,9 @@ use ed25519_dalek::SigningKey;
 use infusion::infusion::cid::cid_blake3;
 use infusion::infusion::sign;
 use rand::{RngCore, thread_rng};
+use serial_test::serial;
 use tisane_relay::AppState;
+use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
     DistributionResponse, RankingResponse, distribute_handler, rank_handler,
@@ -30,6 +32,10 @@ fn get_database_url() -> Option<String> {
     env::var("DATABASE_URL").ok()
 }
 
+async fn connect_test_pool(database_url: &str) -> anyhow::Result<PgPool> {
+    Ok(connect_pool(database_url, PostgresPoolConfig::for_admin()).await?)
+}
+
 fn generate_signing_key() -> SigningKey {
     let mut seed = [0u8; 32];
     thread_rng().fill_bytes(&mut seed);
@@ -37,12 +43,13 @@ fn generate_signing_key() -> SigningKey {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_push_then_pull() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_push_then_pull because DATABASE_URL is not set.");
         return Ok(());
     };
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_test_pool(&database_url).await?;
 
     db::run_migrations(&pool).await?;
 
@@ -88,12 +95,13 @@ async fn test_push_then_pull() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_dedup() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_dedup because DATABASE_URL is not set.");
         return Ok(());
     };
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_test_pool(&database_url).await?;
 
     db::run_migrations(&pool).await?;
     sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
@@ -255,12 +263,13 @@ async fn test_distillery_distribute_endpoint() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_aggregate_candidate_signals() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_aggregate_candidate_signals because DATABASE_URL is not set.");
         return Ok(());
     };
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_test_pool(&database_url).await?;
 
     db::run_migrations(&pool).await?;
     sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
@@ -354,12 +363,13 @@ async fn test_aggregate_candidate_signals() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_rank_from_events_endpoint because DATABASE_URL is not set.");
         return Ok(());
     };
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_test_pool(&database_url).await?;
 
     db::run_migrations(&pool).await?;
     sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
@@ -371,10 +381,7 @@ async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
             "/distillery/rank-from-events",
             post(rank_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(
@@ -409,12 +416,13 @@ async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_distribute_from_events_endpoint because DATABASE_URL is not set.");
         return Ok(());
     };
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_test_pool(&database_url).await?;
 
     db::run_migrations(&pool).await?;
     sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
@@ -426,10 +434,7 @@ async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
             "/distillery/distribute-from-events",
             post(distribute_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(
@@ -468,12 +473,13 @@ async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_feed_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_feed_from_events_endpoint because DATABASE_URL is not set.");
         return Ok(());
     };
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_test_pool(&database_url).await?;
 
     db::run_migrations(&pool).await?;
     sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
@@ -485,10 +491,7 @@ async fn test_feed_from_events_endpoint() -> anyhow::Result<()> {
             "/distillery/feed-from-events",
             post(feed_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(
@@ -527,6 +530,7 @@ async fn test_feed_from_events_endpoint() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!(
@@ -534,7 +538,7 @@ async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
         );
         return Ok(());
     };
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_test_pool(&database_url).await?;
 
     db::run_migrations(&pool).await?;
     sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
@@ -546,10 +550,7 @@ async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
             "/distillery/rank-from-events",
             post(rank_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(

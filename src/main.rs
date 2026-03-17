@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use sqlx::PgPool;
 use uuid::Uuid;
 
+use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db;
 use tisane_relay::server::{serve_command, serve_distillery_command};
 
@@ -27,6 +27,26 @@ enum Commands {
         /// Unique ID for this relay (if not provided, one is generated randomly)
         #[arg(long, env = "RELAY_ID")]
         relay_id: Option<Uuid>,
+
+        /// Maximum Postgres connections held by the relay server
+        #[arg(long, env = "DB_MAX_CONNECTIONS", default_value_t = 10)]
+        db_max_connections: u32,
+
+        /// Minimum Postgres connections kept warm by the relay server
+        #[arg(long, env = "DB_MIN_CONNECTIONS", default_value_t = 1)]
+        db_min_connections: u32,
+
+        /// Seconds to wait when acquiring a Postgres connection
+        #[arg(long, env = "DB_ACQUIRE_TIMEOUT_SECS", default_value_t = 5)]
+        db_acquire_timeout_secs: u64,
+
+        /// Seconds an idle Postgres connection may stay in the pool
+        #[arg(long, env = "DB_IDLE_TIMEOUT_SECS", default_value_t = 300)]
+        db_idle_timeout_secs: u64,
+
+        /// Seconds before recycling a Postgres connection
+        #[arg(long, env = "DB_MAX_LIFETIME_SECS", default_value_t = 1800)]
+        db_max_lifetime_secs: u64,
     },
     /// Start only Distillery endpoints for local algorithm development
     ServeDistillery {
@@ -61,14 +81,14 @@ enum Commands {
 }
 
 async fn add_peer_command(url: String, secret: String, database_url: String) -> anyhow::Result<()> {
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_pool(&database_url, PostgresPoolConfig::for_admin()).await?;
     let id = db::add_peer(&pool, url.clone(), secret).await?;
     println!("Added peer {} with ID {}", url, id);
     Ok(())
 }
 
 async fn list_peers_command(database_url: String) -> anyhow::Result<()> {
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_pool(&database_url, PostgresPoolConfig::for_admin()).await?;
     let peers = db::fetch_all_peers(&pool).await?;
     println!("{:<36} | {:<30} | {:<10}", "ID", "URL", "Health");
     println!("{}", "-".repeat(80));
@@ -79,7 +99,7 @@ async fn list_peers_command(database_url: String) -> anyhow::Result<()> {
 }
 
 async fn remove_peer_command(peer_id: Uuid, database_url: String) -> anyhow::Result<()> {
-    let pool = PgPool::connect(&database_url).await?;
+    let pool = connect_pool(&database_url, PostgresPoolConfig::for_admin()).await?;
     if db::remove_peer(&pool, peer_id).await? {
         println!("Removed peer {}", peer_id);
     } else {
@@ -99,8 +119,25 @@ async fn main() -> anyhow::Result<()> {
             port,
             database_url,
             relay_id,
+            db_max_connections,
+            db_min_connections,
+            db_acquire_timeout_secs,
+            db_idle_timeout_secs,
+            db_max_lifetime_secs,
         } => {
-            serve_command(port, database_url, relay_id).await?;
+            serve_command(
+                port,
+                database_url,
+                relay_id,
+                PostgresPoolConfig {
+                    max_connections: db_max_connections,
+                    min_connections: db_min_connections,
+                    acquire_timeout_secs: db_acquire_timeout_secs,
+                    idle_timeout_secs: db_idle_timeout_secs,
+                    max_lifetime_secs: db_max_lifetime_secs,
+                },
+            )
+            .await?;
         }
         Commands::ServeDistillery { port } => {
             serve_distillery_command(port).await?;

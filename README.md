@@ -47,7 +47,16 @@ DATABASE_URL=postgres://user:pass@localhost:5432/db cargo test
 ```bash
 cargo build
 PORT=8080 DATABASE_URL=... ./target/debug/tisane-relay serve --port 8080 --database-url ...
+DB_MAX_CONNECTIONS=10 DB_MIN_CONNECTIONS=1 DB_ACQUIRE_TIMEOUT_SECS=5 ./target/debug/tisane-relay serve --port 8080 --database-url ...
 ```
+
+Server pool tuning:
+
+- `DB_MAX_CONNECTIONS`
+- `DB_MIN_CONNECTIONS`
+- `DB_ACQUIRE_TIMEOUT_SECS`
+- `DB_IDLE_TIMEOUT_SECS`
+- `DB_MAX_LIFETIME_SECS`
 
 ### Distillery-Only Dev Mode
 
@@ -72,6 +81,20 @@ This exercises:
 - `POST /distillery/distribute`
 
 If Docker is unavailable, the script automatically falls back to `serve-distillery`.
+
+### Phase 3 Validation
+
+For a full local validation of the current Postgres path:
+
+```bash
+./scripts/test_local.sh
+```
+
+For an `EXPLAIN ANALYZE` of the canonical feed aggregation with synthetic load:
+
+```bash
+./scripts/explain_feed_query.sh
+```
 
 ## Event-Derived Distillery Endpoints
 

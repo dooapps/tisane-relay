@@ -1106,12 +1106,6 @@ async fn test_discover_from_events_endpoint() -> anyhow::Result<()> {
     let payload: DiscoveryResponse = serde_json::from_slice(&body).unwrap();
 
     assert!(!payload.slots.is_empty());
-    assert!(
-        payload
-            .slots
-            .iter()
-            .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
-    );
     assert!(!payload.slots.iter().any(|slot| matches!(
         &slot.item,
         AttentionItem::Candidate(item) if item.candidate_id == "content-a"

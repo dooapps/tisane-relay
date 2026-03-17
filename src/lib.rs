@@ -37,6 +37,7 @@ impl AppState {
 }
 
 pub mod application;
+pub mod database;
 pub mod db;
 pub mod distillery_bridge;
 pub mod distillery_runtime;

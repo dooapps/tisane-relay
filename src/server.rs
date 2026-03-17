@@ -13,7 +13,9 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    AppState, db,
+    AppState,
+    database::{PostgresPoolConfig, connect_pool},
+    db,
     distillery_bridge::{distribute_handler, rank_handler},
     distillery_runtime::{
         distribute_from_events_handler, feed_from_events_handler, rank_from_events_handler,
@@ -330,11 +332,12 @@ pub async fn serve_command(
     port: u16,
     database_url: String,
     relay_id_opt: Option<Uuid>,
+    pool_config: PostgresPoolConfig,
 ) -> anyhow::Result<()> {
     let relay_id = relay_id_opt.unwrap_or_else(Uuid::new_v4);
 
     info!("connecting to database: {}", database_url);
-    let pool = sqlx::PgPool::connect(&database_url).await?;
+    let pool = connect_pool(&database_url, pool_config).await?;
 
     info!("running migrations");
     db::run_migrations(&pool).await?;

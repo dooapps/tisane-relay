@@ -6,7 +6,7 @@ use axum::{
     http::{Request, StatusCode},
     routing::post,
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -584,6 +584,93 @@ async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[serial]
+async fn test_home_surface_prefers_recent_candidate() -> anyhow::Result<()> {
+    let Some(database_url) = get_database_url() else {
+        eprintln!("Skipping test_home_surface_prefers_recent_candidate because DATABASE_URL is not set.");
+        return Ok(());
+    };
+    let pool = connect_test_pool(&database_url).await?;
+
+    db::run_migrations(&pool).await?;
+    sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
+
+    let signing_key = generate_signing_key();
+    let author_pubkey = hex::encode(signing_key.verifying_key().to_bytes());
+
+    let events = vec![
+        build_event_at(
+            &author_pubkey,
+            &signing_key,
+            "stale-content",
+            "author-a",
+            "read.completed",
+            serde_json::json!({
+                "content_id": "stale-content",
+                "channel": "essays",
+                "surface": "home",
+                "account_id": "acct-1"
+            }),
+            Utc::now() - Duration::hours(72),
+        ),
+        build_event_at(
+            &author_pubkey,
+            &signing_key,
+            "fresh-content",
+            "author-b",
+            "read.completed",
+            serde_json::json!({
+                "content_id": "fresh-content",
+                "channel": "briefs",
+                "surface": "home",
+                "account_id": "acct-1"
+            }),
+            Utc::now() - Duration::hours(1),
+        ),
+    ];
+
+    db::insert_events(&pool, &events).await?;
+
+    let app = Router::new()
+        .route(
+            "/distillery/rank-from-events",
+            post(rank_from_events_handler),
+        )
+        .with_state(AppState::new(pool, Uuid::new_v4()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/rank-from-events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&EventRankingRequest {
+                        surface: Some("home".to_string()),
+                        account_id: Some("acct-1".to_string()),
+                        channel: None,
+                        since_hours: None,
+                        limit: 50,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: RankingResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.items[0].candidate_id, "fresh-content");
+    assert!(payload.items[0].recency_score > payload.items[1].recency_score);
+
+    Ok(())
+}
+
 fn build_event(
     author_pubkey: &str,
     signing_key: &SigningKey,
@@ -591,6 +678,26 @@ fn build_event(
     author_id: &str,
     event_type: &str,
     payload: serde_json::Value,
+) -> EventInput {
+    build_event_at(
+        author_pubkey,
+        signing_key,
+        content_id,
+        author_id,
+        event_type,
+        payload,
+        Utc::now(),
+    )
+}
+
+fn build_event_at(
+    author_pubkey: &str,
+    signing_key: &SigningKey,
+    content_id: &str,
+    author_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+    occurred_at: chrono::DateTime<Utc>,
 ) -> EventInput {
     let payload_json = Some(payload);
     let payload_bytes = payload_json.as_ref().unwrap().to_string().into_bytes();
@@ -607,7 +714,7 @@ fn build_event(
         content_id: Some(content_id.to_string()),
         event_type: Some(event_type.to_string()),
         payload_json,
-        occurred_at: Some(Utc::now()),
+        occurred_at: Some(occurred_at),
         lamport: Some(1),
     }
 }

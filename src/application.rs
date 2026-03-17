@@ -90,6 +90,7 @@ fn map_candidate(record: AggregatedCandidate) -> CandidateSignals {
         candidate_id: record.candidate_id,
         author_id: record.author_id,
         channel: record.channel,
+        freshness_hours: Some(freshness_hours(record.last_signal_at)),
         read_completed: saturating_u32(record.read_completed),
         citation_created: saturating_u32(record.citation_created),
         derivative_created: saturating_u32(record.derivative_created),
@@ -109,6 +110,11 @@ fn normalize_since(since_hours: Option<i64>) -> Option<DateTime<Utc>> {
     since_hours
         .filter(|hours| *hours > 0)
         .map(|hours| Utc::now() - Duration::hours(hours))
+}
+
+fn freshness_hours(last_signal_at: DateTime<Utc>) -> f64 {
+    let elapsed = Utc::now().signed_duration_since(last_signal_at);
+    elapsed.num_seconds().max(0) as f64 / 3600.0
 }
 
 #[cfg(test)]
@@ -137,6 +143,7 @@ mod tests {
                     candidate_id: "quiet".to_string(),
                     author_id: Some("author-a".to_string()),
                     channel: Some("essays".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(6),
                     read_completed: 3,
                     citation_created: 0,
                     derivative_created: 0,
@@ -146,6 +153,7 @@ mod tests {
                     candidate_id: "strong".to_string(),
                     author_id: Some("author-b".to_string()),
                     channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(1),
                     read_completed: 1,
                     citation_created: 1,
                     derivative_created: 1,
@@ -166,5 +174,47 @@ mod tests {
             .expect("service should rank candidates");
 
         assert_eq!(response.items[0].candidate_id, "strong");
+    }
+
+    #[tokio::test]
+    async fn maps_recency_from_candidate_aggregate() {
+        let service = DistilleryFeedService::new(Arc::new(FakeCandidateSignalStore {
+            candidates: vec![
+                AggregatedCandidate {
+                    candidate_id: "stale".to_string(),
+                    author_id: Some("author-a".to_string()),
+                    channel: Some("essays".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(72),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+                AggregatedCandidate {
+                    candidate_id: "fresh".to_string(),
+                    author_id: Some("author-b".to_string()),
+                    channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(1),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+            ],
+        }));
+
+        let response = service
+            .rank_from_events(DistilleryEventQuery {
+                surface: Some("home".to_string()),
+                account_id: Some("acct-1".to_string()),
+                channel: None,
+                since_hours: None,
+                limit: 50,
+            })
+            .await
+            .expect("service should rank candidates");
+
+        assert_eq!(response.items[0].candidate_id, "fresh");
+        assert!(response.items[0].recency_score > response.items[1].recency_score);
     }
 }

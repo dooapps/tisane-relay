@@ -124,6 +124,8 @@ impl RelaySyncService {
         last_time: DateTime<Utc>,
         last_id: Uuid,
     ) -> Result<()> {
-        self.store.update_peer_cursor(peer_id, last_time, last_id).await
+        self.store
+            .update_peer_cursor(peer_id, last_time, last_id)
+            .await
     }
 }

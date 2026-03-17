@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 use uuid::Uuid;
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
@@ -71,28 +71,34 @@ pub struct CandidateAggregationQuery {
 }
 
 pub async fn insert_events(pool: &PgPool, events: &[EventInput]) -> Result<Vec<i64>, sqlx::Error> {
-    let mut inserted = Vec::new();
+    if events.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    for ev in events {
-        let row = sqlx::query("INSERT INTO events (event_id, author_pubkey, signature, payload_hash, device_id, author_id, content_id, event_type, payload_json, occurred_at, lamport) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (event_id) DO NOTHING RETURNING server_seq")
-            .bind(ev.event_id)
-            .bind(&ev.author_pubkey)
-            .bind(&ev.signature)
-            .bind(&ev.payload_hash)
-            .bind(&ev.device_id)
-            .bind(&ev.author_id)
-            .bind(&ev.content_id)
-            .bind(&ev.event_type)
-            .bind(&ev.payload_json)
-            .bind(&ev.occurred_at)
-            .bind(&ev.lamport)
-            .fetch_optional(pool)
-            .await?;
+    let mut builder: QueryBuilder<'_, Postgres> = QueryBuilder::new(
+        "INSERT INTO events (event_id, author_pubkey, signature, payload_hash, device_id, author_id, content_id, event_type, payload_json, occurred_at, lamport) ",
+    );
 
-        if let Some(r) = row {
-            let seq: i64 = r.get("server_seq");
-            inserted.push(seq);
-        }
+    builder.push_values(events, |mut row, event| {
+        row.push_bind(event.event_id)
+            .push_bind(&event.author_pubkey)
+            .push_bind(&event.signature)
+            .push_bind(&event.payload_hash)
+            .push_bind(&event.device_id)
+            .push_bind(&event.author_id)
+            .push_bind(&event.content_id)
+            .push_bind(&event.event_type)
+            .push_bind(&event.payload_json)
+            .push_bind(&event.occurred_at)
+            .push_bind(&event.lamport);
+    });
+
+    builder.push(" ON CONFLICT (event_id) DO NOTHING RETURNING server_seq");
+
+    let rows = builder.build().fetch_all(pool).await?;
+    let mut inserted = Vec::with_capacity(rows.len());
+    for row in rows {
+        inserted.push(row.get::<i64, _>("server_seq"));
     }
 
     Ok(inserted)
@@ -251,7 +257,7 @@ pub async fn aggregate_candidate_signals(
     pool: &PgPool,
     query: &CandidateAggregationQuery,
 ) -> Result<Vec<AggregatedCandidate>, sqlx::Error> {
-    let rows = sqlx::query(
+    let mut builder: QueryBuilder<'_, Postgres> = QueryBuilder::new(
         r#"
         SELECT
             COALESCE(content_id, payload_json->>'content_id') AS candidate_id,
@@ -270,22 +276,39 @@ pub async fn aggregate_candidate_signals(
         FROM events
         WHERE COALESCE(content_id, payload_json->>'content_id') IS NOT NULL
           AND event_type IN ('read.completed', 'citation.created', 'derivative.created', 'value.snapshot')
-          AND ($1::timestamptz IS NULL OR occurred_at >= $1)
-          AND ($2::text IS NULL OR payload_json->>'surface' = $2)
-          AND ($3::text IS NULL OR payload_json->>'account_id' = $3)
-          AND ($4::text IS NULL OR payload_json->>'channel' = $4)
+        "#,
+    );
+
+    if let Some(since) = query.since {
+        builder.push(" AND occurred_at >= ");
+        builder.push_bind(since);
+    }
+
+    if let Some(surface) = query.surface.as_deref() {
+        builder.push(" AND payload_json->>'surface' = ");
+        builder.push_bind(surface);
+    }
+
+    if let Some(account_id) = query.account_id.as_deref() {
+        builder.push(" AND payload_json->>'account_id' = ");
+        builder.push_bind(account_id);
+    }
+
+    if let Some(channel) = query.channel.as_deref() {
+        builder.push(" AND payload_json->>'channel' = ");
+        builder.push_bind(channel);
+    }
+
+    builder.push(
+        r#"
         GROUP BY COALESCE(content_id, payload_json->>'content_id')
         ORDER BY MAX(occurred_at) DESC, candidate_id ASC
-        LIMIT $5
+        LIMIT 
         "#,
-    )
-    .bind(query.since)
-    .bind(query.surface.as_deref())
-    .bind(query.account_id.as_deref())
-    .bind(query.channel.as_deref())
-    .bind(query.limit)
-    .fetch_all(pool)
-    .await?;
+    );
+    builder.push_bind(query.limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
 
     let mut candidates = Vec::with_capacity(rows.len());
     for row in rows {

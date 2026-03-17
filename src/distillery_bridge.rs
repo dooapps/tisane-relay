@@ -1,13 +1,12 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
 
 pub use distillery::{
-    AttentionDistributionRequest, AttentionDistributionResponse, AttentionItem,
-    AttentionMixPolicy,
+    AttentionDistributionRequest, AttentionDistributionResponse, AttentionItem, AttentionMixPolicy,
     AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
-    AuthorRankingResponse, AuthorSignals, CandidateSignals, DistributionRequest,
-    DistributionResponse, DiscoveryRequest, DiscoveryResponse, RankedAuthor, RankedCandidate,
-    RankingRequest, RankingResponse, discover, distribute, distribute_attention,
-    distribute_authors, rank, rank_authors,
+    AuthorRankingResponse, AuthorSignals, CandidateSignals, DiscoveryRequest, DiscoveryResponse,
+    DistributionRequest, DistributionResponse, RankedAuthor, RankedCandidate, RankingRequest,
+    RankingResponse, discover, distribute, distribute_attention, distribute_authors, rank,
+    rank_authors,
 };
 
 pub async fn rank_handler(Json(request): Json<RankingRequest>) -> impl IntoResponse {

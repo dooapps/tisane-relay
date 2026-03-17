@@ -19,10 +19,10 @@ use tisane_relay::AppState;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
-    AttentionDistributionResponse, AttentionItem, AttentionMixPolicy,
-    AuthorDistributionResponse, AuthorRankingResponse, DiscoveryResponse,
-    DistributionResponse, RankingResponse, attention_handler, discover_handler,
-    distribute_authors_handler, distribute_handler, rank_authors_handler, rank_handler,
+    AttentionDistributionResponse, AttentionItem, AttentionMixPolicy, AuthorDistributionResponse,
+    AuthorRankingResponse, DiscoveryResponse, DistributionResponse, RankingResponse,
+    attention_handler, discover_handler, distribute_authors_handler, distribute_handler,
+    rank_authors_handler, rank_handler,
 };
 use tisane_relay::distillery_runtime::{
     EventAttentionDistributionRequest, EventAuthorDistributionRequest, EventAuthorRankingRequest,
@@ -463,18 +463,24 @@ async fn test_distillery_attention_endpoint() {
     let payload: AttentionDistributionResponse = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(payload.slots.len(), 2);
-    assert!(payload
-        .slots
-        .iter()
-        .any(|slot| matches!(slot.item, AttentionItem::Candidate(_))));
-    assert!(payload
-        .slots
-        .iter()
-        .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
-    assert!(payload.slots[1]
-        .placement_reasons
-        .iter()
-        .any(|reason| reason.starts_with("attention.mix.fairness")));
+    assert!(
+        payload
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
+    );
+    assert!(
+        payload
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.item, AttentionItem::Author(_)))
+    );
+    assert!(
+        payload.slots[1]
+            .placement_reasons
+            .iter()
+            .any(|reason| reason.starts_with("attention.mix.fairness"))
+    );
 }
 
 #[tokio::test]
@@ -492,6 +498,8 @@ async fn test_distillery_discover_endpoint() {
                         "surface": "discover",
                         "account_id": "acct-1",
                         "slot_count": 2,
+                        "excluded_candidate_ids": ["content-a"],
+                        "excluded_author_ids": ["author-c"],
                         "candidates": [
                             {
                                 "candidate_id": "content-a",
@@ -524,6 +532,16 @@ async fn test_distillery_discover_endpoint() {
                                 "citation_created": 1,
                                 "derivative_created": 0,
                                 "value_snapshot": 0.0
+                            },
+                            {
+                                "author_id": "author-d",
+                                "primary_channel": "essays",
+                                "freshness_hours": 2.0,
+                                "unique_content_count": 1,
+                                "read_completed": 1,
+                                "citation_created": 0,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.0
                             }
                         ]
                     })
@@ -540,10 +558,20 @@ async fn test_distillery_discover_endpoint() {
     let payload: DiscoveryResponse = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(payload.slots.len(), 2);
-    assert!(payload
-        .slots
-        .iter()
-        .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
+    assert!(!payload.slots.iter().any(|slot| matches!(
+        &slot.item,
+        AttentionItem::Candidate(item) if item.candidate_id == "content-a"
+    )));
+    assert!(!payload.slots.iter().any(|slot| matches!(
+        &slot.item,
+        AttentionItem::Author(item) if item.author_id == "author-c"
+    )));
+    assert!(
+        payload
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
+    );
 }
 
 #[tokio::test]
@@ -703,7 +731,9 @@ async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
 #[serial]
 async fn test_rank_authors_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
-        eprintln!("Skipping test_rank_authors_from_events_endpoint because DATABASE_URL is not set.");
+        eprintln!(
+            "Skipping test_rank_authors_from_events_endpoint because DATABASE_URL is not set."
+        );
         return Ok(());
     };
     let pool = connect_test_pool(&database_url).await?;
@@ -756,7 +786,9 @@ async fn test_rank_authors_from_events_endpoint() -> anyhow::Result<()> {
 #[serial]
 async fn test_distribute_authors_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
-        eprintln!("Skipping test_distribute_authors_from_events_endpoint because DATABASE_URL is not set.");
+        eprintln!(
+            "Skipping test_distribute_authors_from_events_endpoint because DATABASE_URL is not set."
+        );
         return Ok(());
     };
     let pool = connect_test_pool(&database_url).await?;
@@ -813,7 +845,9 @@ async fn test_distribute_authors_from_events_endpoint() -> anyhow::Result<()> {
 #[serial]
 async fn test_discover_authors_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
-        eprintln!("Skipping test_discover_authors_from_events_endpoint because DATABASE_URL is not set.");
+        eprintln!(
+            "Skipping test_discover_authors_from_events_endpoint because DATABASE_URL is not set."
+        );
         return Ok(());
     };
     let pool = connect_test_pool(&database_url).await?;
@@ -980,18 +1014,24 @@ async fn test_attention_from_events_endpoint() -> anyhow::Result<()> {
     let payload: AttentionDistributionResponse = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(payload.slots.len(), 2);
-    assert!(payload
-        .slots
-        .iter()
-        .any(|slot| matches!(slot.item, AttentionItem::Candidate(_))));
-    assert!(payload
-        .slots
-        .iter()
-        .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
-    assert!(payload.slots[1]
-        .placement_reasons
-        .iter()
-        .any(|reason| reason.starts_with("attention.mix.fairness")));
+    assert!(
+        payload
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
+    );
+    assert!(
+        payload
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.item, AttentionItem::Author(_)))
+    );
+    assert!(
+        payload.slots[1]
+            .placement_reasons
+            .iter()
+            .any(|reason| reason.starts_with("attention.mix.fairness"))
+    );
 
     Ok(())
 }
@@ -1029,6 +1069,8 @@ async fn test_discover_from_events_endpoint() -> anyhow::Result<()> {
                         account_id: Some("acct-1".to_string()),
                         channel: None,
                         slot_count: Some(3),
+                        excluded_candidate_ids: vec!["content-a".to_string()],
+                        excluded_author_ids: vec!["author-a".to_string()],
                         since_hours: None,
                         limit: 50,
                     })
@@ -1045,10 +1087,16 @@ async fn test_discover_from_events_endpoint() -> anyhow::Result<()> {
     let payload: DiscoveryResponse = serde_json::from_slice(&body).unwrap();
 
     assert!(!payload.slots.is_empty());
-    assert!(payload
-        .slots
-        .iter()
-        .any(|slot| matches!(slot.item, AttentionItem::Candidate(_))));
+    assert!(
+        payload
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
+    );
+    assert!(!payload.slots.iter().any(|slot| matches!(
+        &slot.item,
+        AttentionItem::Candidate(item) if item.candidate_id == "content-a"
+    )));
 
     Ok(())
 }
@@ -1169,7 +1217,9 @@ async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
 #[serial]
 async fn test_home_surface_prefers_recent_candidate() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
-        eprintln!("Skipping test_home_surface_prefers_recent_candidate because DATABASE_URL is not set.");
+        eprintln!(
+            "Skipping test_home_surface_prefers_recent_candidate because DATABASE_URL is not set."
+        );
         return Ok(());
     };
     let pool = connect_test_pool(&database_url).await?;

@@ -62,6 +62,10 @@ pub struct EventDiscoveryRequest {
     pub channel: Option<String>,
     #[serde(default)]
     pub slot_count: Option<usize>,
+    #[serde(default)]
+    pub excluded_candidate_ids: Vec<String>,
+    #[serde(default)]
+    pub excluded_author_ids: Vec<String>,
     pub since_hours: Option<i64>,
     #[serde(default = "default_event_limit")]
     pub limit: i64,
@@ -170,7 +174,12 @@ pub async fn discover_from_events_handler(
 ) -> impl IntoResponse {
     match state
         .distillery_service
-        .discover_from_events(map_discovery_query(&request), request.slot_count)
+        .discover_from_events(
+            map_discovery_query(&request),
+            request.slot_count,
+            request.excluded_candidate_ids.clone(),
+            request.excluded_author_ids.clone(),
+        )
         .await
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),

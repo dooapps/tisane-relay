@@ -97,7 +97,7 @@ async fn pull_handler(
 ) -> impl IntoResponse {
     let since = q.since.unwrap_or(0);
     let limit = q.limit.unwrap_or(100);
-    match db::fetch_events_since(&state.pool, since, limit).await {
+    match state.sync_service.pull_since(since, limit).await {
         Ok((events, next_cursor)) => (
             StatusCode::OK,
             Json(PullResp {
@@ -133,7 +133,7 @@ async fn replicate_handler(
         }
     };
 
-    let peer = match db::validate_peer_token(&state.pool, token).await {
+    let peer = match state.sync_service.authorize_peer(token).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return (
@@ -212,7 +212,7 @@ fn ingestion_error_response(error: IngestionError) -> axum::response::Response {
 }
 
 async fn peers_handler(State(state): State<AppState>) -> impl IntoResponse {
-    match db::fetch_healthy_peers(&state.pool).await {
+    match state.sync_service.healthy_peers().await {
         Ok(peers) => (StatusCode::OK, Json(peers)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -232,7 +232,7 @@ async fn replication_worker(state: AppState) {
     loop {
         tokio::time::sleep(Duration::from_secs(5)).await;
 
-        let peers = match db::fetch_healthy_peers(&state.pool).await {
+        let peers = match state.sync_service.healthy_peers().await {
             Ok(p) => p,
             Err(e) => {
                 error!("Worker failed to fetch peers: {}", e);
@@ -241,13 +241,10 @@ async fn replication_worker(state: AppState) {
         };
 
         for peer in peers {
-            let events_to_send = match db::fetch_replication_batch(
-                &state.pool,
-                peer.last_cursor_time,
-                peer.last_cursor_id,
-                50,
-            )
-            .await
+            let events_to_send = match state
+                .sync_service
+                .replication_batch(peer.last_cursor_time, peer.last_cursor_id, 50)
+                .await
             {
                 Ok(evs) => evs,
                 Err(e) => {
@@ -293,13 +290,14 @@ async fn replication_worker(state: AppState) {
                 Ok(resp) => {
                     if resp.status().is_success() {
                         let last = events_to_send.last().unwrap();
-                        if let Err(e) = db::update_peer_cursor(
-                            &state.pool,
-                            peer.peer_id,
-                            last.occurred_at.unwrap_or(chrono::Utc::now()),
-                            last.event_id,
-                        )
-                        .await
+                        if let Err(e) = state
+                            .sync_service
+                            .acknowledge_peer(
+                                peer.peer_id,
+                                last.occurred_at.unwrap_or(chrono::Utc::now()),
+                                last.event_id,
+                            )
+                            .await
                         {
                             error!("Failed to update cursor for peer {}: {}", peer.peer_id, e);
                         } else {

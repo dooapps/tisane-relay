@@ -19,8 +19,9 @@ use tisane_relay::AppState;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
-    AttentionDistributionResponse, AttentionItem, AuthorDistributionResponse,
-    AuthorRankingResponse, DistributionResponse, RankingResponse, attention_handler,
+    AttentionDistributionResponse, AttentionItem, AttentionMixPolicy,
+    AuthorDistributionResponse, AuthorRankingResponse, DistributionResponse, RankingResponse,
+    attention_handler,
     distribute_authors_handler, distribute_handler, rank_authors_handler, rank_handler,
 };
 use tisane_relay::distillery_runtime::{
@@ -404,8 +405,13 @@ async fn test_distillery_attention_endpoint() {
                         "surface": "home",
                         "account_id": "acct-1",
                         "slot_count": 2,
-                        "min_content_slots": 1,
-                        "min_author_slots": 1,
+                        "min_content_slots": 0,
+                        "min_author_slots": 0,
+                        "mix_policy": {
+                            "target_author_share": 0.5,
+                            "fairness_weight": 5.0,
+                            "max_consecutive_same_kind": 0
+                        },
                         "max_per_author": 2,
                         "max_per_channel": 2,
                         "candidates": [
@@ -418,6 +424,16 @@ async fn test_distillery_attention_endpoint() {
                                 "citation_created": 1,
                                 "derivative_created": 1,
                                 "value_snapshot": 1.0
+                            },
+                            {
+                                "candidate_id": "content-b",
+                                "author_id": "author-c",
+                                "channel": "analysis",
+                                "freshness_hours": 2.0,
+                                "read_completed": 2,
+                                "citation_created": 1,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.5
                             }
                         ],
                         "authors": [
@@ -454,6 +470,10 @@ async fn test_distillery_attention_endpoint() {
         .slots
         .iter()
         .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
+    assert!(payload.slots[1]
+        .placement_reasons
+        .iter()
+        .any(|reason| reason.starts_with("attention.mix.fairness")));
 }
 
 #[tokio::test]
@@ -865,8 +885,13 @@ async fn test_attention_from_events_endpoint() -> anyhow::Result<()> {
                         account_id: Some("acct-1".to_string()),
                         channel: None,
                         slot_count: 2,
-                        min_content_slots: 1,
-                        min_author_slots: 1,
+                        min_content_slots: 0,
+                        min_author_slots: 0,
+                        mix_policy: AttentionMixPolicy {
+                            target_author_share: 0.5,
+                            fairness_weight: 5.0,
+                            max_consecutive_same_kind: 0,
+                        },
                         max_per_author: 2,
                         max_per_channel: 2,
                         since_hours: None,
@@ -893,6 +918,10 @@ async fn test_attention_from_events_endpoint() -> anyhow::Result<()> {
         .slots
         .iter()
         .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
+    assert!(payload.slots[1]
+        .placement_reasons
+        .iter()
+        .any(|reason| reason.starts_with("attention.mix.fairness")));
 
     Ok(())
 }

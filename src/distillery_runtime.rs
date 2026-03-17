@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     application::{DistilleryEventQuery, DistributionPolicy},
+    distillery_bridge::AttentionMixPolicy,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -43,6 +44,8 @@ pub struct EventAttentionDistributionRequest {
     pub min_content_slots: usize,
     #[serde(default)]
     pub min_author_slots: usize,
+    #[serde(default)]
+    pub mix_policy: AttentionMixPolicy,
     #[serde(default = "default_occurrence_limit")]
     pub max_per_author: usize,
     #[serde(default = "default_occurrence_limit")]
@@ -178,6 +181,7 @@ fn map_policy(request: &EventDistributionRequest) -> DistributionPolicy {
         slot_count: request.slot_count,
         min_content_slots: 0,
         min_author_slots: 0,
+        attention_mix_policy: AttentionMixPolicy::default(),
         max_per_author: request.max_per_author,
         max_per_channel: request.max_per_channel,
     }
@@ -188,6 +192,7 @@ fn map_attention_policy(request: &EventAttentionDistributionRequest) -> Distribu
         slot_count: request.slot_count,
         min_content_slots: request.min_content_slots,
         min_author_slots: request.min_author_slots,
+        attention_mix_policy: request.mix_policy.clone(),
         max_per_author: request.max_per_author,
         max_per_channel: request.max_per_channel,
     }

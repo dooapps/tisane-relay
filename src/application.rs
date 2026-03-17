@@ -6,11 +6,11 @@ use chrono::{DateTime, Duration, Utc};
 use crate::{
     db::{AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery},
     distillery_bridge::{
-        AttentionDistributionRequest, AttentionDistributionResponse, AuthorDistributionRequest,
-        AuthorDistributionResponse, AuthorRankingRequest, AuthorRankingResponse, AuthorSignals,
-        CandidateSignals, DistributionRequest, DistributionResponse, RankingRequest,
-        RankingResponse, distribute, distribute_attention, distribute_authors, rank,
-        rank_authors,
+        AttentionDistributionRequest, AttentionDistributionResponse, AttentionMixPolicy,
+        AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
+        AuthorRankingResponse, AuthorSignals, CandidateSignals, DistributionRequest,
+        DistributionResponse, RankingRequest, RankingResponse, distribute,
+        distribute_attention, distribute_authors, rank, rank_authors,
     },
     storage::CandidateSignalStore,
 };
@@ -29,6 +29,7 @@ pub struct DistributionPolicy {
     pub slot_count: usize,
     pub min_content_slots: usize,
     pub min_author_slots: usize,
+    pub attention_mix_policy: AttentionMixPolicy,
     pub max_per_author: usize,
     pub max_per_channel: usize,
 }
@@ -111,6 +112,7 @@ impl DistilleryFeedService {
             slot_count: policy.slot_count,
             min_content_slots: policy.min_content_slots,
             min_author_slots: policy.min_author_slots,
+            mix_policy: policy.attention_mix_policy,
             max_per_author: policy.max_per_author,
             max_per_channel: policy.max_per_channel,
             candidates,
@@ -445,6 +447,7 @@ mod tests {
                     slot_count: 2,
                     min_content_slots: 0,
                     min_author_slots: 0,
+                    attention_mix_policy: AttentionMixPolicy::default(),
                     max_per_author: 1,
                     max_per_channel: 1,
                 },
@@ -495,8 +498,13 @@ mod tests {
                 },
                 DistributionPolicy {
                     slot_count: 2,
-                    min_content_slots: 1,
-                    min_author_slots: 1,
+                    min_content_slots: 0,
+                    min_author_slots: 0,
+                    attention_mix_policy: AttentionMixPolicy {
+                        target_author_share: 0.5,
+                        fairness_weight: 5.0,
+                        max_consecutive_same_kind: 0,
+                    },
                     max_per_author: 2,
                     max_per_channel: 2,
                 },

@@ -1,10 +1,9 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
-use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AppState, db,
-    distillery_bridge::{CandidateSignals, DistributionRequest, RankingRequest, distribute, rank},
+    AppState,
+    application::{DistilleryEventQuery, DistributionPolicy},
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -39,22 +38,12 @@ pub async fn rank_from_events_handler(
     State(state): State<AppState>,
     Json(request): Json<EventRankingRequest>,
 ) -> impl IntoResponse {
-    let query = build_candidate_query(
-        request.since_hours,
-        request.surface.clone(),
-        request.account_id.clone(),
-        request.channel.clone(),
-        request.limit,
-    );
-    match db::aggregate_candidate_signals(&state.pool, &query).await {
-        Ok(candidates) => {
-            let response = rank(RankingRequest {
-                surface: request.surface,
-                account_id: request.account_id,
-                candidates: candidates.into_iter().map(map_candidate).collect(),
-            });
-            (StatusCode::OK, Json(response)).into_response()
-        }
+    match state
+        .distillery_service
+        .rank_from_events(map_ranking_query(&request))
+        .await
+    {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": error.to_string() })),
@@ -67,25 +56,12 @@ pub async fn distribute_from_events_handler(
     State(state): State<AppState>,
     Json(request): Json<EventDistributionRequest>,
 ) -> impl IntoResponse {
-    let query = build_candidate_query(
-        request.since_hours,
-        request.surface.clone(),
-        request.account_id.clone(),
-        request.channel.clone(),
-        request.limit,
-    );
-    match db::aggregate_candidate_signals(&state.pool, &query).await {
-        Ok(candidates) => {
-            let response = distribute(DistributionRequest {
-                surface: request.surface,
-                account_id: request.account_id,
-                slot_count: request.slot_count,
-                max_per_author: request.max_per_author,
-                max_per_channel: request.max_per_channel,
-                candidates: candidates.into_iter().map(map_candidate).collect(),
-            });
-            (StatusCode::OK, Json(response)).into_response()
-        }
+    match state
+        .distillery_service
+        .distribute_from_events(map_distribution_query(&request), map_policy(&request))
+        .await
+    {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": error.to_string() })),
@@ -101,45 +77,31 @@ pub async fn feed_from_events_handler(
     distribute_from_events_handler(State(state), Json(request)).await
 }
 
-fn map_candidate(record: db::AggregatedCandidate) -> CandidateSignals {
-    CandidateSignals {
-        candidate_id: record.candidate_id,
-        author_id: record.author_id,
-        channel: record.channel,
-        read_completed: saturating_u32(record.read_completed),
-        citation_created: saturating_u32(record.citation_created),
-        derivative_created: saturating_u32(record.derivative_created),
-        value_snapshot: record.value_snapshot.max(0.0),
+fn map_ranking_query(request: &EventRankingRequest) -> DistilleryEventQuery {
+    DistilleryEventQuery {
+        surface: request.surface.clone(),
+        account_id: request.account_id.clone(),
+        channel: request.channel.clone(),
+        since_hours: request.since_hours,
+        limit: request.limit,
     }
 }
 
-fn saturating_u32(value: i64) -> u32 {
-    if value <= 0 {
-        0
-    } else {
-        u32::try_from(value).unwrap_or(u32::MAX)
+fn map_policy(request: &EventDistributionRequest) -> DistributionPolicy {
+    DistributionPolicy {
+        slot_count: request.slot_count,
+        max_per_author: request.max_per_author,
+        max_per_channel: request.max_per_channel,
     }
 }
 
-fn normalize_since(since_hours: Option<i64>) -> Option<DateTime<Utc>> {
-    since_hours
-        .filter(|hours| *hours > 0)
-        .map(|hours| Utc::now() - Duration::hours(hours))
-}
-
-fn build_candidate_query(
-    since_hours: Option<i64>,
-    surface: Option<String>,
-    account_id: Option<String>,
-    channel: Option<String>,
-    limit: i64,
-) -> db::CandidateAggregationQuery {
-    db::CandidateAggregationQuery {
-        since: normalize_since(since_hours),
-        surface,
-        account_id,
-        channel,
-        limit,
+fn map_distribution_query(request: &EventDistributionRequest) -> DistilleryEventQuery {
+    DistilleryEventQuery {
+        surface: request.surface.clone(),
+        account_id: request.account_id.clone(),
+        channel: request.channel.clone(),
+        since_hours: request.since_hours,
+        limit: request.limit,
     }
 }
 

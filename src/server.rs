@@ -8,9 +8,7 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
-use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -20,7 +18,7 @@ use crate::{
     distillery_runtime::{
         distribute_from_events_handler, feed_from_events_handler, rank_from_events_handler,
     },
-    utils::compute_payload_hash,
+    ingestion::IngestionError,
 };
 
 #[derive(Deserialize)]
@@ -70,52 +68,6 @@ fn relay_app(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn validate_and_insert(
-    pool: &PgPool,
-    mut events: Vec<db::EventInput>,
-) -> Result<Vec<i64>, (StatusCode, String)> {
-    for ev in &mut events {
-        ev.payload_hash = compute_payload_hash(&ev.payload_json);
-
-        let pubkey_bytes = hex::decode(&ev.author_pubkey).map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                "invalid author_pubkey hex".to_string(),
-            )
-        })?;
-        let sig_bytes = hex::decode(&ev.signature)
-            .map_err(|_| (StatusCode::BAD_REQUEST, "invalid signature hex".to_string()))?;
-
-        let vk = VerifyingKey::from_bytes(&pubkey_bytes.try_into().unwrap_or([0u8; 32]))
-            .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid public key".to_string()))?;
-
-        let sig_array: [u8; 64] = sig_bytes.try_into().map_err(|_| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "invalid signature length".to_string(),
-            )
-        })?;
-
-        let payload_bytes = if let Some(p) = ev.payload_json.as_ref() {
-            p.to_string().into_bytes()
-        } else {
-            vec![]
-        };
-
-        if infusion::infusion::sign::verify(&vk, &payload_bytes, &sig_array).is_err() {
-            return Err((StatusCode::UNAUTHORIZED, "invalid signature".to_string()));
-        }
-    }
-
-    match db::insert_events(pool, &events).await {
-        Ok(inserted) => Ok(inserted),
-        Err(e) => {
-            error!("insert error: {}", e);
-            Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
-        }
-    }
-}
-
 async fn push_handler(
     State(state): State<AppState>,
     Json(events): Json<Vec<db::EventInput>>,
@@ -129,54 +81,13 @@ async fn push_handler(
             .into_response();
     }
 
-    for ev in &events {
-        if let Some(etype) = &ev.event_type {
-            match etype.as_str() {
-                "read.completed" | "derivative.created" | "citation.created" | "value.snapshot" => {
-                    if let Some(payload) = &ev.payload_json {
-                        let has_content_id = payload
-                            .get("content_id")
-                            .and_then(|v| v.as_str())
-                            .map(|s| !s.is_empty())
-                            .unwrap_or(false);
-
-                        if !has_content_id {
-                            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-                                 "error": format!("missing or empty content_id for event type '{}'", etype)
-                             }))).into_response();
-                        }
-
-                        if etype == "value.snapshot" {
-                            let has_window = payload.get("window_start").is_some()
-                                && payload.get("window_end").is_some();
-                            if !has_window {
-                                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-                                    "error": "missing window_start or window_end for value.snapshot"
-                                }))).into_response();
-                            }
-                        }
-                    } else {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(serde_json::json!({
-                                "error": format!("missing payload for event type '{}'", etype)
-                            })),
-                        )
-                            .into_response();
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    match validate_and_insert(&state.pool, events).await {
+    match state.ingestion_service.validate_and_insert(events).await {
         Ok(inserted) => (
             StatusCode::OK,
             Json(serde_json::json!({"inserted": inserted.len()})),
         )
             .into_response(),
-        Err((code, msg)) => (code, Json(serde_json::json!({"error": msg}))).into_response(),
+        Err(error) => ingestion_error_response(error),
     }
 }
 
@@ -267,13 +178,36 @@ async fn replicate_handler(
         }
     }
 
-    match validate_and_insert(&state.pool, events).await {
+    match state.ingestion_service.validate_and_insert(events).await {
         Ok(inserted) => (
             StatusCode::OK,
             Json(serde_json::json!({"inserted": inserted.len()})),
         )
             .into_response(),
-        Err((code, msg)) => (code, Json(serde_json::json!({"error": msg}))).into_response(),
+        Err(error) => ingestion_error_response(error),
+    }
+}
+
+fn ingestion_error_response(error: IngestionError) -> axum::response::Response {
+    match error {
+        IngestionError::BadRequest(message) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": message})),
+        )
+            .into_response(),
+        IngestionError::Unauthorized(message) => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": message})),
+        )
+            .into_response(),
+        IngestionError::Internal(message) => {
+            error!("insert error: {}", message);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": message})),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -407,7 +341,7 @@ pub async fn serve_command(
     info!("running migrations");
     db::run_migrations(&pool).await?;
 
-    let state = AppState { pool, relay_id };
+    let state = AppState::new(pool, relay_id);
     let worker_state = state.clone();
     tokio::spawn(async move {
         replication_worker(worker_state).await;

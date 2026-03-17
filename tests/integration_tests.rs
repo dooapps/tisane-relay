@@ -371,10 +371,7 @@ async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
             "/distillery/rank-from-events",
             post(rank_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(
@@ -426,10 +423,7 @@ async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
             "/distillery/distribute-from-events",
             post(distribute_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(
@@ -485,10 +479,7 @@ async fn test_feed_from_events_endpoint() -> anyhow::Result<()> {
             "/distillery/feed-from-events",
             post(feed_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(
@@ -546,10 +537,7 @@ async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
             "/distillery/rank-from-events",
             post(rank_from_events_handler),
         )
-        .with_state(AppState {
-            pool,
-            relay_id: Uuid::new_v4(),
-        });
+        .with_state(AppState::new(pool, Uuid::new_v4()));
 
     let response = app
         .oneshot(

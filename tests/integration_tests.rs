@@ -21,8 +21,8 @@ use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
     AttentionDistributionResponse, AttentionItem, AttentionMixPolicy, AuthorDistributionResponse,
     AuthorRankingResponse, DiscoveryResponse, DistributionResponse, RankingResponse,
-    attention_handler, discover_handler, distribute_authors_handler, distribute_handler,
-    rank_authors_handler, rank_handler,
+    RecentAttentionContext, RecentAttentionSignal, attention_handler, discover_handler,
+    distribute_authors_handler, distribute_handler, rank_authors_handler, rank_handler,
 };
 use tisane_relay::distillery_runtime::{
     EventAttentionDistributionRequest, EventAuthorDistributionRequest, EventAuthorRankingRequest,
@@ -500,6 +500,15 @@ async fn test_distillery_discover_endpoint() {
                         "slot_count": 2,
                         "excluded_candidate_ids": ["content-a"],
                         "excluded_author_ids": ["author-c"],
+                        "recent_attention": {
+                            "candidates": [
+                                {
+                                    "id": "content-b",
+                                    "recent_impressions": 1,
+                                    "last_served_hours": 4.0
+                                }
+                            ]
+                        },
                         "candidates": [
                             {
                                 "candidate_id": "content-a",
@@ -557,21 +566,23 @@ async fn test_distillery_discover_endpoint() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let payload: DiscoveryResponse = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(payload.slots.len(), 2);
+    assert_eq!(payload.slots.len(), 1);
     assert!(!payload.slots.iter().any(|slot| matches!(
         &slot.item,
         AttentionItem::Candidate(item) if item.candidate_id == "content-a"
     )));
     assert!(!payload.slots.iter().any(|slot| matches!(
         &slot.item,
+        AttentionItem::Candidate(item) if item.candidate_id == "content-b"
+    )));
+    assert!(!payload.slots.iter().any(|slot| matches!(
+        &slot.item,
         AttentionItem::Author(item) if item.author_id == "author-c"
     )));
-    assert!(
-        payload
-            .slots
-            .iter()
-            .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
-    );
+    assert!(payload.slots.iter().any(|slot| matches!(
+        &slot.item,
+        AttentionItem::Author(item) if item.author_id == "author-d"
+    )));
 }
 
 #[tokio::test]
@@ -1071,6 +1082,14 @@ async fn test_discover_from_events_endpoint() -> anyhow::Result<()> {
                         slot_count: Some(3),
                         excluded_candidate_ids: vec!["content-a".to_string()],
                         excluded_author_ids: vec!["author-a".to_string()],
+                        recent_attention: RecentAttentionContext {
+                            candidates: vec![RecentAttentionSignal {
+                                id: "content-b".to_string(),
+                                recent_impressions: 1,
+                                last_served_hours: Some(20.0),
+                            }],
+                            ..RecentAttentionContext::default()
+                        },
                         since_hours: None,
                         limit: 50,
                     })
@@ -1087,15 +1106,13 @@ async fn test_discover_from_events_endpoint() -> anyhow::Result<()> {
     let payload: DiscoveryResponse = serde_json::from_slice(&body).unwrap();
 
     assert!(!payload.slots.is_empty());
-    assert!(
-        payload
-            .slots
-            .iter()
-            .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
-    );
     assert!(!payload.slots.iter().any(|slot| matches!(
         &slot.item,
         AttentionItem::Candidate(item) if item.candidate_id == "content-a"
+    )));
+    assert!(!payload.slots.iter().any(|slot| matches!(
+        &slot.item,
+        AttentionItem::Candidate(item) if item.candidate_id == "content-b"
     )));
 
     Ok(())

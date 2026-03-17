@@ -6,7 +6,7 @@ use axum::{
     http::{Request, StatusCode},
     routing::post,
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -19,11 +19,13 @@ use tisane_relay::AppState;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
-    DistributionResponse, RankingResponse, distribute_handler, rank_handler,
+    AuthorRankingResponse, DistributionResponse, RankingResponse, distribute_handler,
+    rank_authors_handler, rank_handler,
 };
 use tisane_relay::distillery_runtime::{
-    EventDistributionRequest, EventRankingRequest, FeedFromEventsRequest,
-    distribute_from_events_handler, feed_from_events_handler, rank_from_events_handler,
+    EventAuthorRankingRequest, EventDistributionRequest, EventRankingRequest,
+    FeedFromEventsRequest, distribute_from_events_handler, feed_from_events_handler,
+    rank_authors_from_events_handler, rank_from_events_handler,
 };
 use tisane_relay::utils::compute_payload_hash;
 use tower::util::ServiceExt;
@@ -196,6 +198,59 @@ async fn test_distillery_rank_endpoint() {
 
     assert_eq!(payload.items[0].candidate_id, "strong");
     assert!(payload.items[0].final_score > payload.items[1].final_score);
+}
+
+#[tokio::test]
+async fn test_distillery_rank_authors_endpoint() {
+    let app = Router::new().route("/distillery/rank-authors", post(rank_authors_handler));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/rank-authors")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface": "discover",
+                        "account_id": "acct-1",
+                        "authors": [
+                            {
+                                "author_id": "author-a",
+                                "primary_channel": "essays",
+                                "freshness_hours": 12.0,
+                                "unique_content_count": 1,
+                                "read_completed": 1,
+                                "citation_created": 0,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.0
+                            },
+                            {
+                                "author_id": "author-b",
+                                "primary_channel": "briefs",
+                                "freshness_hours": 2.0,
+                                "unique_content_count": 3,
+                                "read_completed": 2,
+                                "citation_created": 1,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.5
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: AuthorRankingResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.items[0].author_id, "author-b");
+    assert!(payload.items[0].coverage_score > payload.items[1].coverage_score);
 }
 
 #[tokio::test]
@@ -417,6 +472,59 @@ async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
 
 #[tokio::test]
 #[serial]
+async fn test_rank_authors_from_events_endpoint() -> anyhow::Result<()> {
+    let Some(database_url) = get_database_url() else {
+        eprintln!("Skipping test_rank_authors_from_events_endpoint because DATABASE_URL is not set.");
+        return Ok(());
+    };
+    let pool = connect_test_pool(&database_url).await?;
+
+    db::run_migrations(&pool).await?;
+    sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
+
+    seed_value_protocol_events(&pool).await?;
+
+    let app = Router::new()
+        .route(
+            "/distillery/rank-authors-from-events",
+            post(rank_authors_from_events_handler),
+        )
+        .with_state(AppState::new(pool, Uuid::new_v4()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/rank-authors-from-events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&EventAuthorRankingRequest {
+                        surface: Some("home".to_string()),
+                        account_id: Some("acct-1".to_string()),
+                        channel: None,
+                        since_hours: None,
+                        limit: 50,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: AuthorRankingResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.items[0].author_id, "author-a");
+    assert!(payload.items[0].coverage_score >= payload.items[1].coverage_score);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
 async fn test_distribute_from_events_endpoint() -> anyhow::Result<()> {
     let Some(database_url) = get_database_url() else {
         eprintln!("Skipping test_distribute_from_events_endpoint because DATABASE_URL is not set.");
@@ -584,6 +692,93 @@ async fn test_rank_from_events_filters_by_channel() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[serial]
+async fn test_home_surface_prefers_recent_candidate() -> anyhow::Result<()> {
+    let Some(database_url) = get_database_url() else {
+        eprintln!("Skipping test_home_surface_prefers_recent_candidate because DATABASE_URL is not set.");
+        return Ok(());
+    };
+    let pool = connect_test_pool(&database_url).await?;
+
+    db::run_migrations(&pool).await?;
+    sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
+
+    let signing_key = generate_signing_key();
+    let author_pubkey = hex::encode(signing_key.verifying_key().to_bytes());
+
+    let events = vec![
+        build_event_at(
+            &author_pubkey,
+            &signing_key,
+            "stale-content",
+            "author-a",
+            "read.completed",
+            serde_json::json!({
+                "content_id": "stale-content",
+                "channel": "essays",
+                "surface": "home",
+                "account_id": "acct-1"
+            }),
+            Utc::now() - Duration::hours(72),
+        ),
+        build_event_at(
+            &author_pubkey,
+            &signing_key,
+            "fresh-content",
+            "author-b",
+            "read.completed",
+            serde_json::json!({
+                "content_id": "fresh-content",
+                "channel": "briefs",
+                "surface": "home",
+                "account_id": "acct-1"
+            }),
+            Utc::now() - Duration::hours(1),
+        ),
+    ];
+
+    db::insert_events(&pool, &events).await?;
+
+    let app = Router::new()
+        .route(
+            "/distillery/rank-from-events",
+            post(rank_from_events_handler),
+        )
+        .with_state(AppState::new(pool, Uuid::new_v4()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/rank-from-events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&EventRankingRequest {
+                        surface: Some("home".to_string()),
+                        account_id: Some("acct-1".to_string()),
+                        channel: None,
+                        since_hours: None,
+                        limit: 50,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: RankingResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.items[0].candidate_id, "fresh-content");
+    assert!(payload.items[0].recency_score > payload.items[1].recency_score);
+
+    Ok(())
+}
+
 fn build_event(
     author_pubkey: &str,
     signing_key: &SigningKey,
@@ -591,6 +786,26 @@ fn build_event(
     author_id: &str,
     event_type: &str,
     payload: serde_json::Value,
+) -> EventInput {
+    build_event_at(
+        author_pubkey,
+        signing_key,
+        content_id,
+        author_id,
+        event_type,
+        payload,
+        Utc::now(),
+    )
+}
+
+fn build_event_at(
+    author_pubkey: &str,
+    signing_key: &SigningKey,
+    content_id: &str,
+    author_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+    occurred_at: chrono::DateTime<Utc>,
 ) -> EventInput {
     let payload_json = Some(payload);
     let payload_bytes = payload_json.as_ref().unwrap().to_string().into_bytes();
@@ -607,7 +822,7 @@ fn build_event(
         content_id: Some(content_id.to_string()),
         event_type: Some(event_type.to_string()),
         payload_json,
-        occurred_at: Some(Utc::now()),
+        occurred_at: Some(occurred_at),
         lamport: Some(1),
     }
 }

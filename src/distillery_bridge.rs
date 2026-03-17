@@ -2,6 +2,7 @@ use axum::{Json, http::StatusCode, response::IntoResponse};
 
 pub use distillery::{
     AttentionDistributionRequest, AttentionDistributionResponse, AttentionItem,
+    AttentionMixPolicy,
     AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
     AuthorRankingResponse, AuthorSignals, CandidateSignals, DistributionRequest,
     DistributionResponse, RankedAuthor, RankedCandidate, RankingRequest, RankingResponse,

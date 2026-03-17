@@ -6,8 +6,9 @@ use chrono::{DateTime, Duration, Utc};
 use crate::{
     db::{AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery},
     distillery_bridge::{
-        AuthorRankingRequest, AuthorRankingResponse, AuthorSignals, CandidateSignals,
-        DistributionRequest, DistributionResponse, RankingRequest, RankingResponse, distribute,
+        AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
+        AuthorRankingResponse, AuthorSignals, CandidateSignals, DistributionRequest,
+        DistributionResponse, RankingRequest, RankingResponse, distribute, distribute_authors,
         rank, rank_authors,
     },
     storage::CandidateSignalStore,
@@ -75,6 +76,21 @@ impl DistilleryFeedService {
         Ok(rank_authors(AuthorRankingRequest {
             surface: query.surface,
             account_id: query.account_id,
+            authors,
+        }))
+    }
+
+    pub async fn distribute_authors_from_events(
+        &self,
+        query: DistilleryEventQuery,
+        policy: DistributionPolicy,
+    ) -> Result<AuthorDistributionResponse> {
+        let authors = self.load_authors(&query).await?;
+        Ok(distribute_authors(AuthorDistributionRequest {
+            surface: query.surface,
+            account_id: query.account_id,
+            slot_count: policy.slot_count,
+            max_per_channel: policy.max_per_channel,
             authors,
         }))
     }
@@ -352,5 +368,65 @@ mod tests {
 
         assert_eq!(response.items[0].author_id, "author-b");
         assert!(response.items[0].coverage_score > response.items[1].coverage_score);
+    }
+
+    #[tokio::test]
+    async fn distributes_authors_through_application_service() {
+        let service = DistilleryFeedService::new(Arc::new(FakeCandidateSignalStore {
+            candidates: vec![
+                AggregatedCandidate {
+                    candidate_id: "content-a".to_string(),
+                    author_id: Some("author-a".to_string()),
+                    channel: Some("essays".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(1),
+                    read_completed: 2,
+                    citation_created: 1,
+                    derivative_created: 0,
+                    value_snapshot: 0.5,
+                },
+                AggregatedCandidate {
+                    candidate_id: "content-b".to_string(),
+                    author_id: Some("author-b".to_string()),
+                    channel: Some("essays".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(2),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+                AggregatedCandidate {
+                    candidate_id: "content-c".to_string(),
+                    author_id: Some("author-c".to_string()),
+                    channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(4),
+                    read_completed: 1,
+                    citation_created: 1,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+            ],
+        }));
+
+        let response = service
+            .distribute_authors_from_events(
+                DistilleryEventQuery {
+                    surface: Some("discover".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                    channel: None,
+                    since_hours: None,
+                    limit: 50,
+                },
+                DistributionPolicy {
+                    slot_count: 2,
+                    max_per_author: 1,
+                    max_per_channel: 1,
+                },
+            )
+            .await
+            .expect("service should distribute authors");
+
+        assert_eq!(response.slots.len(), 2);
+        assert_eq!(response.slots[0].item.author_id, "author-a");
+        assert_eq!(response.slots[1].item.author_id, "author-c");
     }
 }

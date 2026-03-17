@@ -34,6 +34,7 @@ pub struct EventDistributionRequest {
 
 pub type FeedFromEventsRequest = EventDistributionRequest;
 pub type EventAuthorRankingRequest = EventRankingRequest;
+pub type EventAuthorDistributionRequest = EventDistributionRequest;
 
 pub async fn rank_from_events_handler(
     State(state): State<AppState>,
@@ -89,11 +90,36 @@ pub async fn rank_authors_from_events_handler(
     }
 }
 
+pub async fn distribute_authors_from_events_handler(
+    State(state): State<AppState>,
+    Json(request): Json<EventAuthorDistributionRequest>,
+) -> impl IntoResponse {
+    match state
+        .distillery_service
+        .distribute_authors_from_events(map_distribution_query(&request), map_policy(&request))
+        .await
+    {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn feed_from_events_handler(
     State(state): State<AppState>,
     Json(request): Json<FeedFromEventsRequest>,
 ) -> impl IntoResponse {
     distribute_from_events_handler(State(state), Json(request)).await
+}
+
+pub async fn discover_authors_from_events_handler(
+    State(state): State<AppState>,
+    Json(request): Json<EventAuthorDistributionRequest>,
+) -> impl IntoResponse {
+    distribute_authors_from_events_handler(State(state), Json(request)).await
 }
 
 fn map_ranking_query(request: &EventRankingRequest) -> DistilleryEventQuery {

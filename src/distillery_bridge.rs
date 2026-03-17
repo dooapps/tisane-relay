@@ -5,8 +5,8 @@ pub use distillery::{
     AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
     AuthorRankingResponse, AuthorSignals, CandidateSignals, DiscoveryRequest, DiscoveryResponse,
     DistributionRequest, DistributionResponse, RankedAuthor, RankedCandidate, RankingRequest,
-    RankingResponse, discover, distribute, distribute_attention, distribute_authors, rank,
-    rank_authors,
+    RankingResponse, RecentAttentionContext, RecentAttentionSignal, discover, distribute,
+    distribute_attention, distribute_authors, rank, rank_authors,
 };
 
 pub async fn rank_handler(Json(request): Json<RankingRequest>) -> impl IntoResponse {

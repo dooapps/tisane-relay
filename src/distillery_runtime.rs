@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AppState,
     application::{DistilleryEventQuery, DistributionPolicy},
-    distillery_bridge::AttentionMixPolicy,
+    distillery_bridge::{AttentionMixPolicy, RecentAttentionContext},
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -66,6 +66,8 @@ pub struct EventDiscoveryRequest {
     pub excluded_candidate_ids: Vec<String>,
     #[serde(default)]
     pub excluded_author_ids: Vec<String>,
+    #[serde(default)]
+    pub recent_attention: RecentAttentionContext,
     pub since_hours: Option<i64>,
     #[serde(default = "default_event_limit")]
     pub limit: i64,
@@ -179,6 +181,7 @@ pub async fn discover_from_events_handler(
             request.slot_count,
             request.excluded_candidate_ids.clone(),
             request.excluded_author_ids.clone(),
+            request.recent_attention.clone(),
         )
         .await
     {

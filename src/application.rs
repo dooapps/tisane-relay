@@ -10,8 +10,8 @@ use crate::{
         AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
         AuthorRankingResponse, AuthorSignals, CandidateSignals, DiscoveryRequest,
         DiscoveryResponse, DistributionRequest, DistributionResponse, RankingRequest,
-        RankingResponse, discover, distribute, distribute_attention, distribute_authors, rank,
-        rank_authors,
+        RankingResponse, RecentAttentionContext, discover, distribute, distribute_attention,
+        distribute_authors, rank, rank_authors,
     },
     storage::CandidateSignalStore,
 };
@@ -127,6 +127,7 @@ impl DistilleryFeedService {
         slot_count: Option<usize>,
         excluded_candidate_ids: Vec<String>,
         excluded_author_ids: Vec<String>,
+        recent_attention: RecentAttentionContext,
     ) -> Result<DiscoveryResponse> {
         let candidates = self.load_candidates(&query).await?;
         let authors = self.load_authors(&query).await?;
@@ -136,6 +137,7 @@ impl DistilleryFeedService {
             slot_count,
             excluded_candidate_ids,
             excluded_author_ids,
+            recent_attention,
             candidates,
             authors,
         }))
@@ -589,6 +591,7 @@ mod tests {
                 Some(2),
                 Vec::new(),
                 Vec::new(),
+                RecentAttentionContext::default(),
             )
             .await
             .expect("service should discover feed");
@@ -641,6 +644,7 @@ mod tests {
                 Some(3),
                 vec!["content-served".to_string()],
                 vec!["author-served".to_string()],
+                RecentAttentionContext::default(),
             )
             .await
             .expect("service should discover filtered feed");

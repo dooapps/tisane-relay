@@ -5,8 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::db::{
-    self, AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery, Event, EventInput,
-    Peer,
+    self, AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery, Event, EventInput, Peer,
 };
 
 #[async_trait]

@@ -8,9 +8,10 @@ use crate::{
     distillery_bridge::{
         AttentionDistributionRequest, AttentionDistributionResponse, AttentionMixPolicy,
         AuthorDistributionRequest, AuthorDistributionResponse, AuthorRankingRequest,
-        AuthorRankingResponse, AuthorSignals, CandidateSignals, DistributionRequest,
-        DistributionResponse, RankingRequest, RankingResponse, distribute,
-        distribute_attention, distribute_authors, rank, rank_authors,
+        AuthorRankingResponse, AuthorSignals, CandidateSignals, DiscoveryRequest,
+        DiscoveryResponse, DistributionRequest, DistributionResponse, RankingRequest,
+        RankingResponse, discover, distribute, distribute_attention, distribute_authors, rank,
+        rank_authors,
     },
     storage::CandidateSignalStore,
 };
@@ -120,6 +121,26 @@ impl DistilleryFeedService {
         }))
     }
 
+    pub async fn discover_from_events(
+        &self,
+        query: DistilleryEventQuery,
+        slot_count: Option<usize>,
+        excluded_candidate_ids: Vec<String>,
+        excluded_author_ids: Vec<String>,
+    ) -> Result<DiscoveryResponse> {
+        let candidates = self.load_candidates(&query).await?;
+        let authors = self.load_authors(&query).await?;
+        Ok(discover(DiscoveryRequest {
+            surface: query.surface,
+            account_id: query.account_id,
+            slot_count,
+            excluded_candidate_ids,
+            excluded_author_ids,
+            candidates,
+            authors,
+        }))
+    }
+
     async fn load_candidates(&self, query: &DistilleryEventQuery) -> Result<Vec<CandidateSignals>> {
         let candidates = self
             .signal_store
@@ -224,16 +245,18 @@ mod tests {
                     continue;
                 };
 
-                let entry = authors.entry(author_id.clone()).or_insert_with(|| AggregatedAuthor {
-                    author_id: author_id.clone(),
-                    primary_channel: candidate.channel.clone(),
-                    last_signal_at: candidate.last_signal_at,
-                    unique_content_count: 0,
-                    read_completed: 0,
-                    citation_created: 0,
-                    derivative_created: 0,
-                    avg_value_snapshot: 0.0,
-                });
+                let entry = authors
+                    .entry(author_id.clone())
+                    .or_insert_with(|| AggregatedAuthor {
+                        author_id: author_id.clone(),
+                        primary_channel: candidate.channel.clone(),
+                        last_signal_at: candidate.last_signal_at,
+                        unique_content_count: 0,
+                        read_completed: 0,
+                        citation_created: 0,
+                        derivative_created: 0,
+                        avg_value_snapshot: 0.0,
+                    });
 
                 entry.primary_channel = entry
                     .primary_channel
@@ -513,13 +536,122 @@ mod tests {
             .expect("service should distribute mixed attention");
 
         assert_eq!(response.slots.len(), 2);
-        assert!(response.slots.iter().any(|slot| matches!(
-            slot.item,
-            AttentionItem::Candidate(_)
+        assert!(
+            response
+                .slots
+                .iter()
+                .any(|slot| matches!(slot.item, AttentionItem::Candidate(_)))
+        );
+        assert!(
+            response
+                .slots
+                .iter()
+                .any(|slot| matches!(slot.item, AttentionItem::Author(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn discovers_surface_mix_through_application_service() {
+        let service = DistilleryFeedService::new(Arc::new(FakeCandidateSignalStore {
+            candidates: vec![
+                AggregatedCandidate {
+                    candidate_id: "content-a".to_string(),
+                    author_id: Some("author-a".to_string()),
+                    channel: Some("essays".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(1),
+                    read_completed: 2,
+                    citation_created: 1,
+                    derivative_created: 0,
+                    value_snapshot: 0.5,
+                },
+                AggregatedCandidate {
+                    candidate_id: "content-b".to_string(),
+                    author_id: Some("author-b".to_string()),
+                    channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(2),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+            ],
+        }));
+
+        let response = service
+            .discover_from_events(
+                DistilleryEventQuery {
+                    surface: Some("discover".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                    channel: None,
+                    since_hours: None,
+                    limit: 50,
+                },
+                Some(2),
+                Vec::new(),
+                Vec::new(),
+            )
+            .await
+            .expect("service should discover feed");
+
+        assert_eq!(response.slots.len(), 2);
+        assert!(
+            response
+                .slots
+                .iter()
+                .any(|slot| matches!(slot.item, AttentionItem::Author(_)))
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_from_events_excludes_recently_served_ids() {
+        let service = DistilleryFeedService::new(Arc::new(FakeCandidateSignalStore {
+            candidates: vec![
+                AggregatedCandidate {
+                    candidate_id: "content-served".to_string(),
+                    author_id: Some("author-served".to_string()),
+                    channel: Some("analysis".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(1),
+                    read_completed: 3,
+                    citation_created: 1,
+                    derivative_created: 1,
+                    value_snapshot: 0.5,
+                },
+                AggregatedCandidate {
+                    candidate_id: "content-open".to_string(),
+                    author_id: Some("author-open".to_string()),
+                    channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(2),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+            ],
+        }));
+
+        let response = service
+            .discover_from_events(
+                DistilleryEventQuery {
+                    surface: Some("discover".to_string()),
+                    account_id: Some("acct-1".to_string()),
+                    channel: None,
+                    since_hours: None,
+                    limit: 50,
+                },
+                Some(3),
+                vec!["content-served".to_string()],
+                vec!["author-served".to_string()],
+            )
+            .await
+            .expect("service should discover filtered feed");
+
+        assert!(!response.slots.iter().any(|slot| matches!(
+            &slot.item,
+            AttentionItem::Candidate(item) if item.candidate_id == "content-served"
         )));
-        assert!(response.slots.iter().any(|slot| matches!(
-            slot.item,
-            AttentionItem::Author(_)
+        assert!(!response.slots.iter().any(|slot| matches!(
+            &slot.item,
+            AttentionItem::Author(item) if item.author_id == "author-served"
         )));
     }
 }

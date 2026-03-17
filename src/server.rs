@@ -17,13 +17,14 @@ use crate::{
     database::{PostgresPoolConfig, connect_pool},
     db,
     distillery_bridge::{
-        attention_handler, distribute_authors_handler, distribute_handler, rank_authors_handler,
-        rank_handler,
+        attention_handler, discover_handler, distribute_authors_handler, distribute_handler,
+        rank_authors_handler, rank_handler,
     },
     distillery_runtime::{
         attention_from_events_handler, discover_authors_from_events_handler,
-        distribute_authors_from_events_handler, distribute_from_events_handler,
-        feed_from_events_handler, rank_authors_from_events_handler, rank_from_events_handler,
+        discover_from_events_handler, distribute_authors_from_events_handler,
+        distribute_from_events_handler, feed_from_events_handler, rank_authors_from_events_handler,
+        rank_from_events_handler,
     },
     ingestion::IngestionError,
 };
@@ -51,7 +52,11 @@ where
     Router::new()
         .route("/health", get(health))
         .route("/distillery/attention", post(attention_handler))
-        .route("/distillery/distribute-authors", post(distribute_authors_handler))
+        .route("/distillery/discover", post(discover_handler))
+        .route(
+            "/distillery/distribute-authors",
+            post(distribute_authors_handler),
+        )
         .route("/distillery/distribute", post(distribute_handler))
         .route("/distillery/rank-authors", post(rank_authors_handler))
         .route("/distillery/rank", post(rank_handler))
@@ -86,6 +91,10 @@ fn relay_app(state: AppState) -> Router {
         .route(
             "/distillery/attention-from-events",
             post(attention_from_events_handler),
+        )
+        .route(
+            "/distillery/discover-from-events",
+            post(discover_from_events_handler),
         )
         .route("/relay/push", post(push_handler))
         .route("/relay/pull", get(pull_handler))

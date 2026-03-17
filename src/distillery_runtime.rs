@@ -55,6 +55,22 @@ pub struct EventAttentionDistributionRequest {
     pub limit: i64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct EventDiscoveryRequest {
+    pub surface: Option<String>,
+    pub account_id: Option<String>,
+    pub channel: Option<String>,
+    #[serde(default)]
+    pub slot_count: Option<usize>,
+    #[serde(default)]
+    pub excluded_candidate_ids: Vec<String>,
+    #[serde(default)]
+    pub excluded_author_ids: Vec<String>,
+    pub since_hours: Option<i64>,
+    #[serde(default = "default_event_limit")]
+    pub limit: i64,
+}
+
 pub type FeedFromEventsRequest = EventDistributionRequest;
 pub type EventAuthorRankingRequest = EventRankingRequest;
 pub type EventAuthorDistributionRequest = EventDistributionRequest;
@@ -152,6 +168,29 @@ pub async fn attention_from_events_handler(
     }
 }
 
+pub async fn discover_from_events_handler(
+    State(state): State<AppState>,
+    Json(request): Json<EventDiscoveryRequest>,
+) -> impl IntoResponse {
+    match state
+        .distillery_service
+        .discover_from_events(
+            map_discovery_query(&request),
+            request.slot_count,
+            request.excluded_candidate_ids.clone(),
+            request.excluded_author_ids.clone(),
+        )
+        .await
+    {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn feed_from_events_handler(
     State(state): State<AppState>,
     Json(request): Json<FeedFromEventsRequest>,
@@ -209,6 +248,16 @@ fn map_distribution_query(request: &EventDistributionRequest) -> DistilleryEvent
 }
 
 fn map_attention_query(request: &EventAttentionDistributionRequest) -> DistilleryEventQuery {
+    DistilleryEventQuery {
+        surface: request.surface.clone(),
+        account_id: request.account_id.clone(),
+        channel: request.channel.clone(),
+        since_hours: request.since_hours,
+        limit: request.limit,
+    }
+}
+
+fn map_discovery_query(request: &EventDiscoveryRequest) -> DistilleryEventQuery {
     DistilleryEventQuery {
         surface: request.surface.clone(),
         account_id: request.account_id.clone(),

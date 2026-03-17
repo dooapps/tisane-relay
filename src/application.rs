@@ -1,16 +1,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use sqlx::PgPool;
 
 use crate::{
-    db::{self, AggregatedCandidate, CandidateAggregationQuery},
+    db::{AggregatedCandidate, CandidateAggregationQuery},
     distillery_bridge::{
         CandidateSignals, DistributionRequest, DistributionResponse, RankingRequest,
         RankingResponse, distribute, rank,
     },
+    storage::CandidateSignalStore,
 };
 
 #[derive(Debug, Clone)]
@@ -29,49 +28,17 @@ pub struct DistributionPolicy {
     pub max_per_channel: usize,
 }
 
-#[async_trait]
-pub trait CandidateSignalStore: Send + Sync {
-    async fn aggregate_candidate_signals(
-        &self,
-        query: &CandidateAggregationQuery,
-    ) -> Result<Vec<AggregatedCandidate>>;
-}
-
-#[derive(Clone)]
-pub struct RelayCandidateSignalStore {
-    pool: PgPool,
-}
-
-impl RelayCandidateSignalStore {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
-#[async_trait]
-impl CandidateSignalStore for RelayCandidateSignalStore {
-    async fn aggregate_candidate_signals(
-        &self,
-        query: &CandidateAggregationQuery,
-    ) -> Result<Vec<AggregatedCandidate>> {
-        db::aggregate_candidate_signals(&self.pool, query)
-            .await
-            .map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 pub struct DistilleryFeedService {
     signal_store: Arc<dyn CandidateSignalStore>,
 }
 
 impl DistilleryFeedService {
-    pub fn new(signal_store: Arc<dyn CandidateSignalStore>) -> Self {
+    pub fn new<T>(signal_store: Arc<T>) -> Self
+    where
+        T: CandidateSignalStore + 'static,
+    {
         Self { signal_store }
-    }
-
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self::new(Arc::new(RelayCandidateSignalStore::new(pool)))
     }
 
     pub async fn rank_from_events(&self, query: DistilleryEventQuery) -> Result<RankingResponse> {
@@ -152,7 +119,7 @@ mod tests {
         candidates: Vec<AggregatedCandidate>,
     }
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl CandidateSignalStore for FakeCandidateSignalStore {
         async fn aggregate_candidate_signals(
             &self,

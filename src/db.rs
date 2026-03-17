@@ -260,21 +260,15 @@ pub async fn aggregate_candidate_signals(
     let mut builder: QueryBuilder<'_, Postgres> = QueryBuilder::new(
         r#"
         SELECT
-            COALESCE(content_id, payload_json->>'content_id') AS candidate_id,
+            candidate_id_resolved AS candidate_id,
             MAX(author_id) AS author_id,
-            MAX(payload_json->>'channel') AS channel,
+            MAX(channel_scope) AS channel,
             COALESCE(SUM(CASE WHEN event_type = 'read.completed' THEN 1 ELSE 0 END), 0) AS read_completed,
             COALESCE(SUM(CASE WHEN event_type = 'citation.created' THEN 1 ELSE 0 END), 0) AS citation_created,
             COALESCE(SUM(CASE WHEN event_type = 'derivative.created' THEN 1 ELSE 0 END), 0) AS derivative_created,
-            COALESCE(MAX(
-                CASE
-                    WHEN event_type = 'value.snapshot'
-                    THEN NULLIF(payload_json->>'score', '')::double precision
-                    ELSE NULL
-                END
-            ), 0.0) AS value_snapshot
+            COALESCE(MAX(snapshot_score), 0.0) AS value_snapshot
         FROM events
-        WHERE COALESCE(content_id, payload_json->>'content_id') IS NOT NULL
+        WHERE candidate_id_resolved IS NOT NULL
           AND event_type IN ('read.completed', 'citation.created', 'derivative.created', 'value.snapshot')
         "#,
     );
@@ -285,23 +279,23 @@ pub async fn aggregate_candidate_signals(
     }
 
     if let Some(surface) = query.surface.as_deref() {
-        builder.push(" AND payload_json->>'surface' = ");
+        builder.push(" AND surface_scope = ");
         builder.push_bind(surface);
     }
 
     if let Some(account_id) = query.account_id.as_deref() {
-        builder.push(" AND payload_json->>'account_id' = ");
+        builder.push(" AND account_scope = ");
         builder.push_bind(account_id);
     }
 
     if let Some(channel) = query.channel.as_deref() {
-        builder.push(" AND payload_json->>'channel' = ");
+        builder.push(" AND channel_scope = ");
         builder.push_bind(channel);
     }
 
     builder.push(
         r#"
-        GROUP BY COALESCE(content_id, payload_json->>'content_id')
+        GROUP BY candidate_id_resolved
         ORDER BY MAX(occurred_at) DESC, candidate_id ASC
         LIMIT 
         "#,

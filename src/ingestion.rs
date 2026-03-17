@@ -1,11 +1,9 @@
 use std::{error::Error, fmt, sync::Arc};
 
 use anyhow::Result;
-use async_trait::async_trait;
 use ed25519_dalek::VerifyingKey;
-use sqlx::PgPool;
 
-use crate::{db, utils::compute_payload_hash};
+use crate::{db, storage::EventBatchStore, utils::compute_payload_hash};
 
 #[derive(Debug)]
 pub enum IngestionError {
@@ -26,43 +24,17 @@ impl fmt::Display for IngestionError {
 
 impl Error for IngestionError {}
 
-#[async_trait]
-pub trait EventBatchStore: Send + Sync {
-    async fn insert_events(&self, events: &[db::EventInput]) -> Result<Vec<i64>>;
-}
-
-#[derive(Clone)]
-pub struct RelayEventBatchStore {
-    pool: PgPool,
-}
-
-impl RelayEventBatchStore {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
-#[async_trait]
-impl EventBatchStore for RelayEventBatchStore {
-    async fn insert_events(&self, events: &[db::EventInput]) -> Result<Vec<i64>> {
-        db::insert_events(&self.pool, events)
-            .await
-            .map_err(Into::into)
-    }
-}
-
 #[derive(Clone)]
 pub struct EventIngestionService {
     event_store: Arc<dyn EventBatchStore>,
 }
 
 impl EventIngestionService {
-    pub fn new(event_store: Arc<dyn EventBatchStore>) -> Self {
+    pub fn new<T>(event_store: Arc<T>) -> Self
+    where
+        T: EventBatchStore + 'static,
+    {
         Self { event_store }
-    }
-
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self::new(Arc::new(RelayEventBatchStore::new(pool)))
     }
 
     pub async fn validate_and_insert(
@@ -165,7 +137,7 @@ mod tests {
 
     struct FakeEventBatchStore;
 
-    #[async_trait]
+    #[async_trait::async_trait]
     impl EventBatchStore for FakeEventBatchStore {
         async fn insert_events(&self, events: &[db::EventInput]) -> Result<Vec<i64>> {
             Ok((1..=events.len() as i64).collect())

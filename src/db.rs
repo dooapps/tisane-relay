@@ -62,6 +62,18 @@ pub struct AggregatedCandidate {
     pub value_snapshot: f64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AggregatedAuthor {
+    pub author_id: String,
+    pub primary_channel: Option<String>,
+    pub last_signal_at: DateTime<Utc>,
+    pub unique_content_count: i64,
+    pub read_completed: i64,
+    pub citation_created: i64,
+    pub derivative_created: i64,
+    pub avg_value_snapshot: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct CandidateAggregationQuery {
     pub since: Option<DateTime<Utc>>,
@@ -321,4 +333,73 @@ pub async fn aggregate_candidate_signals(
     }
 
     Ok(candidates)
+}
+
+pub async fn aggregate_author_signals(
+    pool: &PgPool,
+    query: &CandidateAggregationQuery,
+) -> Result<Vec<AggregatedAuthor>, sqlx::Error> {
+    let mut builder: QueryBuilder<'_, Postgres> = QueryBuilder::new(
+        r#"
+        SELECT
+            author_id,
+            MAX(channel_scope) AS primary_channel,
+            MAX(occurred_at) AS last_signal_at,
+            COUNT(DISTINCT candidate_id_resolved) AS unique_content_count,
+            COALESCE(SUM(CASE WHEN event_type = 'read.completed' THEN 1 ELSE 0 END), 0) AS read_completed,
+            COALESCE(SUM(CASE WHEN event_type = 'citation.created' THEN 1 ELSE 0 END), 0) AS citation_created,
+            COALESCE(SUM(CASE WHEN event_type = 'derivative.created' THEN 1 ELSE 0 END), 0) AS derivative_created,
+            COALESCE(AVG(snapshot_score), 0.0) AS avg_value_snapshot
+        FROM events
+        WHERE author_id IS NOT NULL
+          AND event_type IN ('read.completed', 'citation.created', 'derivative.created', 'value.snapshot')
+        "#,
+    );
+
+    if let Some(since) = query.since {
+        builder.push(" AND occurred_at >= ");
+        builder.push_bind(since);
+    }
+
+    if let Some(surface) = query.surface.as_deref() {
+        builder.push(" AND surface_scope = ");
+        builder.push_bind(surface);
+    }
+
+    if let Some(account_id) = query.account_id.as_deref() {
+        builder.push(" AND account_scope = ");
+        builder.push_bind(account_id);
+    }
+
+    if let Some(channel) = query.channel.as_deref() {
+        builder.push(" AND channel_scope = ");
+        builder.push_bind(channel);
+    }
+
+    builder.push(
+        r#"
+        GROUP BY author_id
+        ORDER BY MAX(occurred_at) DESC, author_id ASC
+        LIMIT
+        "#,
+    );
+    builder.push_bind(query.limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
+
+    let mut authors = Vec::with_capacity(rows.len());
+    for row in rows {
+        authors.push(AggregatedAuthor {
+            author_id: row.get::<String, _>("author_id"),
+            primary_channel: row.get::<Option<String>, _>("primary_channel"),
+            last_signal_at: row.get::<DateTime<Utc>, _>("last_signal_at"),
+            unique_content_count: row.get::<i64, _>("unique_content_count"),
+            read_completed: row.get::<i64, _>("read_completed"),
+            citation_created: row.get::<i64, _>("citation_created"),
+            derivative_created: row.get::<i64, _>("derivative_created"),
+            avg_value_snapshot: row.get::<f64, _>("avg_value_snapshot"),
+        });
+    }
+
+    Ok(authors)
 }

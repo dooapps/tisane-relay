@@ -4,10 +4,11 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::{
-    db::{AggregatedCandidate, CandidateAggregationQuery},
+    db::{AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery},
     distillery_bridge::{
-        CandidateSignals, DistributionRequest, DistributionResponse, RankingRequest,
-        RankingResponse, distribute, rank,
+        AuthorRankingRequest, AuthorRankingResponse, AuthorSignals, CandidateSignals,
+        DistributionRequest, DistributionResponse, RankingRequest, RankingResponse, distribute,
+        rank, rank_authors,
     },
     storage::CandidateSignalStore,
 };
@@ -66,12 +67,32 @@ impl DistilleryFeedService {
         }))
     }
 
+    pub async fn rank_authors_from_events(
+        &self,
+        query: DistilleryEventQuery,
+    ) -> Result<AuthorRankingResponse> {
+        let authors = self.load_authors(&query).await?;
+        Ok(rank_authors(AuthorRankingRequest {
+            surface: query.surface,
+            account_id: query.account_id,
+            authors,
+        }))
+    }
+
     async fn load_candidates(&self, query: &DistilleryEventQuery) -> Result<Vec<CandidateSignals>> {
         let candidates = self
             .signal_store
             .aggregate_candidate_signals(&build_candidate_query(query))
             .await?;
         Ok(candidates.into_iter().map(map_candidate).collect())
+    }
+
+    async fn load_authors(&self, query: &DistilleryEventQuery) -> Result<Vec<AuthorSignals>> {
+        let authors = self
+            .signal_store
+            .aggregate_author_signals(&build_candidate_query(query))
+            .await?;
+        Ok(authors.into_iter().map(map_author).collect())
     }
 }
 
@@ -98,6 +119,19 @@ fn map_candidate(record: AggregatedCandidate) -> CandidateSignals {
     }
 }
 
+fn map_author(record: AggregatedAuthor) -> AuthorSignals {
+    AuthorSignals {
+        author_id: record.author_id,
+        primary_channel: record.primary_channel,
+        freshness_hours: Some(freshness_hours(record.last_signal_at)),
+        unique_content_count: saturating_u32(record.unique_content_count),
+        read_completed: saturating_u32(record.read_completed),
+        citation_created: saturating_u32(record.citation_created),
+        derivative_created: saturating_u32(record.derivative_created),
+        value_snapshot: record.avg_value_snapshot.max(0.0),
+    }
+}
+
 fn saturating_u32(value: i64) -> u32 {
     if value <= 0 {
         0
@@ -119,6 +153,8 @@ fn freshness_hours(last_signal_at: DateTime<Utc>) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     struct FakeCandidateSignalStore {
@@ -132,6 +168,54 @@ mod tests {
             _query: &CandidateAggregationQuery,
         ) -> Result<Vec<AggregatedCandidate>> {
             Ok(self.candidates.clone())
+        }
+
+        async fn aggregate_author_signals(
+            &self,
+            _query: &CandidateAggregationQuery,
+        ) -> Result<Vec<AggregatedAuthor>> {
+            let mut authors: HashMap<String, AggregatedAuthor> = HashMap::new();
+
+            for candidate in &self.candidates {
+                let Some(author_id) = candidate.author_id.clone() else {
+                    continue;
+                };
+
+                let entry = authors.entry(author_id.clone()).or_insert_with(|| AggregatedAuthor {
+                    author_id: author_id.clone(),
+                    primary_channel: candidate.channel.clone(),
+                    last_signal_at: candidate.last_signal_at,
+                    unique_content_count: 0,
+                    read_completed: 0,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    avg_value_snapshot: 0.0,
+                });
+
+                entry.primary_channel = entry
+                    .primary_channel
+                    .clone()
+                    .or_else(|| candidate.channel.clone());
+                entry.last_signal_at = entry.last_signal_at.max(candidate.last_signal_at);
+                entry.unique_content_count += 1;
+                entry.read_completed += candidate.read_completed;
+                entry.citation_created += candidate.citation_created;
+                entry.derivative_created += candidate.derivative_created;
+                entry.avg_value_snapshot += candidate.value_snapshot;
+            }
+
+            let mut authors: Vec<AggregatedAuthor> = authors
+                .into_values()
+                .map(|mut author| {
+                    if author.unique_content_count > 0 {
+                        author.avg_value_snapshot /= author.unique_content_count as f64;
+                    }
+                    author
+                })
+                .collect();
+            authors.sort_by(|left, right| left.author_id.cmp(&right.author_id));
+
+            Ok(authors)
         }
     }
 
@@ -216,5 +300,57 @@ mod tests {
 
         assert_eq!(response.items[0].candidate_id, "fresh");
         assert!(response.items[0].recency_score > response.items[1].recency_score);
+    }
+
+    #[tokio::test]
+    async fn ranks_authors_through_application_service() {
+        let service = DistilleryFeedService::new(Arc::new(FakeCandidateSignalStore {
+            candidates: vec![
+                AggregatedCandidate {
+                    candidate_id: "content-a".to_string(),
+                    author_id: Some("author-a".to_string()),
+                    channel: Some("essays".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(6),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+                AggregatedCandidate {
+                    candidate_id: "content-b".to_string(),
+                    author_id: Some("author-b".to_string()),
+                    channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(1),
+                    read_completed: 2,
+                    citation_created: 1,
+                    derivative_created: 0,
+                    value_snapshot: 0.5,
+                },
+                AggregatedCandidate {
+                    candidate_id: "content-c".to_string(),
+                    author_id: Some("author-b".to_string()),
+                    channel: Some("briefs".to_string()),
+                    last_signal_at: Utc::now() - Duration::hours(2),
+                    read_completed: 1,
+                    citation_created: 0,
+                    derivative_created: 0,
+                    value_snapshot: 0.0,
+                },
+            ],
+        }));
+
+        let response = service
+            .rank_authors_from_events(DistilleryEventQuery {
+                surface: Some("discover".to_string()),
+                account_id: Some("acct-1".to_string()),
+                channel: None,
+                since_hours: None,
+                limit: 50,
+            })
+            .await
+            .expect("service should rank authors");
+
+        assert_eq!(response.items[0].author_id, "author-b");
+        assert!(response.items[0].coverage_score > response.items[1].coverage_score);
     }
 }

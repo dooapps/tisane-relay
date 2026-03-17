@@ -4,7 +4,10 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db::{self, AggregatedCandidate, CandidateAggregationQuery, Event, EventInput, Peer};
+use crate::db::{
+    self, AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery, Event, EventInput,
+    Peer,
+};
 
 #[async_trait]
 pub trait CandidateSignalStore: Send + Sync {
@@ -12,6 +15,11 @@ pub trait CandidateSignalStore: Send + Sync {
         &self,
         query: &CandidateAggregationQuery,
     ) -> Result<Vec<AggregatedCandidate>>;
+
+    async fn aggregate_author_signals(
+        &self,
+        query: &CandidateAggregationQuery,
+    ) -> Result<Vec<AggregatedAuthor>>;
 }
 
 #[async_trait]
@@ -60,6 +68,15 @@ impl CandidateSignalStore for PostgresRelayStorage {
         query: &CandidateAggregationQuery,
     ) -> Result<Vec<AggregatedCandidate>> {
         db::aggregate_candidate_signals(&self.pool, query)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn aggregate_author_signals(
+        &self,
+        query: &CandidateAggregationQuery,
+    ) -> Result<Vec<AggregatedAuthor>> {
+        db::aggregate_author_signals(&self.pool, query)
             .await
             .map_err(Into::into)
     }

@@ -19,11 +19,13 @@ use tisane_relay::AppState;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
-    DistributionResponse, RankingResponse, distribute_handler, rank_handler,
+    AuthorRankingResponse, DistributionResponse, RankingResponse, distribute_handler,
+    rank_authors_handler, rank_handler,
 };
 use tisane_relay::distillery_runtime::{
-    EventDistributionRequest, EventRankingRequest, FeedFromEventsRequest,
-    distribute_from_events_handler, feed_from_events_handler, rank_from_events_handler,
+    EventAuthorRankingRequest, EventDistributionRequest, EventRankingRequest,
+    FeedFromEventsRequest, distribute_from_events_handler, feed_from_events_handler,
+    rank_authors_from_events_handler, rank_from_events_handler,
 };
 use tisane_relay::utils::compute_payload_hash;
 use tower::util::ServiceExt;
@@ -196,6 +198,59 @@ async fn test_distillery_rank_endpoint() {
 
     assert_eq!(payload.items[0].candidate_id, "strong");
     assert!(payload.items[0].final_score > payload.items[1].final_score);
+}
+
+#[tokio::test]
+async fn test_distillery_rank_authors_endpoint() {
+    let app = Router::new().route("/distillery/rank-authors", post(rank_authors_handler));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/rank-authors")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface": "discover",
+                        "account_id": "acct-1",
+                        "authors": [
+                            {
+                                "author_id": "author-a",
+                                "primary_channel": "essays",
+                                "freshness_hours": 12.0,
+                                "unique_content_count": 1,
+                                "read_completed": 1,
+                                "citation_created": 0,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.0
+                            },
+                            {
+                                "author_id": "author-b",
+                                "primary_channel": "briefs",
+                                "freshness_hours": 2.0,
+                                "unique_content_count": 3,
+                                "read_completed": 2,
+                                "citation_created": 1,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.5
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: AuthorRankingResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.items[0].author_id, "author-b");
+    assert!(payload.items[0].coverage_score > payload.items[1].coverage_score);
 }
 
 #[tokio::test]
@@ -411,6 +466,59 @@ async fn test_rank_from_events_endpoint() -> anyhow::Result<()> {
 
     assert_eq!(payload.items[0].candidate_id, "content-a");
     assert!(payload.items[0].final_score > payload.items[1].final_score);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_rank_authors_from_events_endpoint() -> anyhow::Result<()> {
+    let Some(database_url) = get_database_url() else {
+        eprintln!("Skipping test_rank_authors_from_events_endpoint because DATABASE_URL is not set.");
+        return Ok(());
+    };
+    let pool = connect_test_pool(&database_url).await?;
+
+    db::run_migrations(&pool).await?;
+    sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
+
+    seed_value_protocol_events(&pool).await?;
+
+    let app = Router::new()
+        .route(
+            "/distillery/rank-authors-from-events",
+            post(rank_authors_from_events_handler),
+        )
+        .with_state(AppState::new(pool, Uuid::new_v4()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/rank-authors-from-events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&EventAuthorRankingRequest {
+                        surface: Some("home".to_string()),
+                        account_id: Some("acct-1".to_string()),
+                        channel: None,
+                        since_hours: None,
+                        limit: 50,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: AuthorRankingResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.items[0].author_id, "author-a");
+    assert!(payload.items[0].coverage_score >= payload.items[1].coverage_score);
 
     Ok(())
 }

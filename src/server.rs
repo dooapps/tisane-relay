@@ -16,9 +16,10 @@ use crate::{
     AppState,
     database::{PostgresPoolConfig, connect_pool},
     db,
-    distillery_bridge::{distribute_handler, rank_handler},
+    distillery_bridge::{distribute_handler, rank_authors_handler, rank_handler},
     distillery_runtime::{
-        distribute_from_events_handler, feed_from_events_handler, rank_from_events_handler,
+        distribute_from_events_handler, feed_from_events_handler, rank_authors_from_events_handler,
+        rank_from_events_handler,
     },
     ingestion::IngestionError,
 };
@@ -46,6 +47,7 @@ where
     Router::new()
         .route("/health", get(health))
         .route("/distillery/distribute", post(distribute_handler))
+        .route("/distillery/rank-authors", post(rank_authors_handler))
         .route("/distillery/rank", post(rank_handler))
 }
 
@@ -62,6 +64,10 @@ fn relay_app(state: AppState) -> Router {
         .route(
             "/distillery/rank-from-events",
             post(rank_from_events_handler),
+        )
+        .route(
+            "/distillery/rank-authors-from-events",
+            post(rank_authors_from_events_handler),
         )
         .route("/relay/push", post(push_handler))
         .route("/relay/pull", get(pull_handler))

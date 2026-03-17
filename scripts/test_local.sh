@@ -31,9 +31,12 @@ if ! (command -v pg_isready >/dev/null 2>&1 && pg_isready -h 127.0.0.1 -p 5432 -
   exit 1
 fi
 
-# Run cargo test (integration tests depend on DATABASE_URL)
-echo "Running cargo test..."
-cargo test --workspace --tests
+# Run cargo test for distillery and relay
+echo "Running distillery tests..."
+cargo test --manifest-path ../distillery/Cargo.toml
+
+echo "Running tisane-relay tests..."
+cargo test --tests
 
 # Tear down
 echo "Stopping local Postgres..."

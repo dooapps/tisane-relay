@@ -20,16 +20,17 @@ use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db::{self, CandidateAggregationQuery, EventInput};
 use tisane_relay::distillery_bridge::{
     AttentionDistributionResponse, AttentionItem, AttentionMixPolicy,
-    AuthorDistributionResponse, AuthorRankingResponse, DistributionResponse, RankingResponse,
-    attention_handler,
+    AuthorDistributionResponse, AuthorRankingResponse, DiscoveryResponse,
+    DistributionResponse, RankingResponse, attention_handler, discover_handler,
     distribute_authors_handler, distribute_handler, rank_authors_handler, rank_handler,
 };
 use tisane_relay::distillery_runtime::{
-    EventAttentionDistributionRequest, EventAuthorDistributionRequest,
-    EventAuthorRankingRequest, EventDistributionRequest, EventRankingRequest,
-    FeedFromEventsRequest, attention_from_events_handler, discover_authors_from_events_handler,
-    distribute_authors_from_events_handler, distribute_from_events_handler,
-    feed_from_events_handler, rank_authors_from_events_handler, rank_from_events_handler,
+    EventAttentionDistributionRequest, EventAuthorDistributionRequest, EventAuthorRankingRequest,
+    EventDiscoveryRequest, EventDistributionRequest, EventRankingRequest, FeedFromEventsRequest,
+    attention_from_events_handler, discover_authors_from_events_handler,
+    discover_from_events_handler, distribute_authors_from_events_handler,
+    distribute_from_events_handler, feed_from_events_handler, rank_authors_from_events_handler,
+    rank_from_events_handler,
 };
 use tisane_relay::utils::compute_payload_hash;
 use tower::util::ServiceExt;
@@ -474,6 +475,75 @@ async fn test_distillery_attention_endpoint() {
         .placement_reasons
         .iter()
         .any(|reason| reason.starts_with("attention.mix.fairness")));
+}
+
+#[tokio::test]
+async fn test_distillery_discover_endpoint() {
+    let app = Router::new().route("/distillery/discover", post(discover_handler));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/discover")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "surface": "discover",
+                        "account_id": "acct-1",
+                        "slot_count": 2,
+                        "candidates": [
+                            {
+                                "candidate_id": "content-a",
+                                "author_id": "author-a",
+                                "channel": "essays",
+                                "freshness_hours": 1.0,
+                                "read_completed": 2,
+                                "citation_created": 1,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.0
+                            },
+                            {
+                                "candidate_id": "content-b",
+                                "author_id": "author-b",
+                                "channel": "briefs",
+                                "freshness_hours": 2.0,
+                                "read_completed": 1,
+                                "citation_created": 0,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.0
+                            }
+                        ],
+                        "authors": [
+                            {
+                                "author_id": "author-c",
+                                "primary_channel": "analysis",
+                                "freshness_hours": 1.0,
+                                "unique_content_count": 2,
+                                "read_completed": 1,
+                                "citation_created": 1,
+                                "derivative_created": 0,
+                                "value_snapshot": 0.0
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: DiscoveryResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(payload.slots.len(), 2);
+    assert!(payload
+        .slots
+        .iter()
+        .any(|slot| matches!(slot.item, AttentionItem::Author(_))));
 }
 
 #[tokio::test]
@@ -922,6 +992,63 @@ async fn test_attention_from_events_endpoint() -> anyhow::Result<()> {
         .placement_reasons
         .iter()
         .any(|reason| reason.starts_with("attention.mix.fairness")));
+
+    Ok(())
+}
+
+#[tokio::test]
+#[serial]
+async fn test_discover_from_events_endpoint() -> anyhow::Result<()> {
+    let Some(database_url) = get_database_url() else {
+        eprintln!("Skipping test_discover_from_events_endpoint because DATABASE_URL is not set.");
+        return Ok(());
+    };
+    let pool = connect_test_pool(&database_url).await?;
+
+    db::run_migrations(&pool).await?;
+    sqlx::query("TRUNCATE TABLE events").execute(&pool).await?;
+
+    seed_value_protocol_events(&pool).await?;
+
+    let app = Router::new()
+        .route(
+            "/distillery/discover-from-events",
+            post(discover_from_events_handler),
+        )
+        .with_state(AppState::new(pool, Uuid::new_v4()));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/distillery/discover-from-events")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&EventDiscoveryRequest {
+                        surface: Some("home".to_string()),
+                        account_id: Some("acct-1".to_string()),
+                        channel: None,
+                        slot_count: Some(3),
+                        since_hours: None,
+                        limit: 50,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let payload: DiscoveryResponse = serde_json::from_slice(&body).unwrap();
+
+    assert!(!payload.slots.is_empty());
+    assert!(payload
+        .slots
+        .iter()
+        .any(|slot| matches!(slot.item, AttentionItem::Candidate(_))));
 
     Ok(())
 }

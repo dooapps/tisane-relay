@@ -4,6 +4,7 @@ use uuid::Uuid;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db;
 use tisane_relay::auth::DistilleryAccessConfig;
+use tisane_relay::cors::DistilleryCorsConfig;
 use tisane_relay::rate_limit::DistilleryRateLimitConfig;
 use tisane_relay::server::{serve_command, serve_distillery_command};
 
@@ -61,6 +62,10 @@ enum Commands {
         /// Window size in seconds for the distillery rate limit
         #[arg(long, env = "DISTILLERY_RATE_LIMIT_WINDOW_SECS", default_value_t = 60)]
         distillery_rate_limit_window_secs: u64,
+
+        /// Comma-separated origins allowed to call distillery endpoints from the web
+        #[arg(long, env = "DISTILLERY_ALLOWED_ORIGINS")]
+        distillery_allowed_origins: Option<String>,
     },
     /// Start only Distillery endpoints for local algorithm development
     ServeDistillery {
@@ -79,6 +84,10 @@ enum Commands {
         /// Window size in seconds for the distillery rate limit
         #[arg(long, env = "DISTILLERY_RATE_LIMIT_WINDOW_SECS", default_value_t = 60)]
         distillery_rate_limit_window_secs: u64,
+
+        /// Comma-separated origins allowed to call distillery endpoints from the web
+        #[arg(long, env = "DISTILLERY_ALLOWED_ORIGINS")]
+        distillery_allowed_origins: Option<String>,
     },
     /// Add a new peer
     AddPeer {
@@ -153,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
             distillery_api_key,
             distillery_rate_limit_max_requests,
             distillery_rate_limit_window_secs,
+            distillery_allowed_origins,
         } => {
             serve_command(
                 port,
@@ -170,6 +180,7 @@ async fn main() -> anyhow::Result<()> {
                     distillery_rate_limit_max_requests,
                     distillery_rate_limit_window_secs,
                 ),
+                DistilleryCorsConfig::from_csv(distillery_allowed_origins),
             )
             .await?;
         }
@@ -178,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
             distillery_api_key,
             distillery_rate_limit_max_requests,
             distillery_rate_limit_window_secs,
+            distillery_allowed_origins,
         } => {
             serve_distillery_command(
                 port,
@@ -186,6 +198,7 @@ async fn main() -> anyhow::Result<()> {
                     distillery_rate_limit_max_requests,
                     distillery_rate_limit_window_secs,
                 ),
+                DistilleryCorsConfig::from_csv(distillery_allowed_origins),
             )
             .await?;
         }

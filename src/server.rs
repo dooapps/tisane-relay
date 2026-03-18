@@ -17,6 +17,7 @@ use crate::{
     AppState,
     api::error_response,
     auth::{DistilleryAccessConfig, require_distillery_access},
+    cors::DistilleryCorsConfig,
     database::{PostgresPoolConfig, connect_pool},
     db,
     distillery_bridge::{
@@ -130,6 +131,17 @@ where
     ))
 }
 
+fn cors_enabled_distillery_routes<S>(routes: Router<S>, cors: &DistilleryCorsConfig) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    if let Some(layer) = cors.layer() {
+        routes.layer(layer)
+    } else {
+        routes
+    }
+}
+
 fn versioned_distillery_routes<S>(
     config: DistilleryAccessConfig,
     version: &'static str,
@@ -167,6 +179,7 @@ fn relay_app(
     state: AppState,
     distillery_access: DistilleryAccessConfig,
     rate_limit_config: DistilleryRateLimitConfig,
+    cors_config: DistilleryCorsConfig,
 ) -> Router {
     let legacy_limiter = DistilleryRateLimiter::new(rate_limit_config.clone());
     let versioned_limiter = DistilleryRateLimiter::new(rate_limit_config);
@@ -175,18 +188,24 @@ fn relay_app(
         .route("/health", get(health))
         .nest(
             "/distillery",
-            rate_limited_distillery_routes(
-                protected_distillery_routes(distillery_access.clone())
-                    .merge(protected_runtime_distillery_routes(distillery_access.clone())),
-                legacy_limiter,
+            cors_enabled_distillery_routes(
+                rate_limited_distillery_routes(
+                    protected_distillery_routes(distillery_access.clone())
+                        .merge(protected_runtime_distillery_routes(distillery_access.clone())),
+                    legacy_limiter,
+                ),
+                &cors_config,
             ),
         )
         .nest(
             "/distillery/v1",
-            rate_limited_distillery_routes(
-                versioned_distillery_routes(distillery_access.clone(), "v1")
-                    .merge(versioned_runtime_distillery_routes(distillery_access, "v1")),
-                versioned_limiter,
+            cors_enabled_distillery_routes(
+                rate_limited_distillery_routes(
+                    versioned_distillery_routes(distillery_access.clone(), "v1")
+                        .merge(versioned_runtime_distillery_routes(distillery_access, "v1")),
+                    versioned_limiter,
+                ),
+                &cors_config,
             ),
         )
         .route("/relay/push", post(push_handler))
@@ -450,6 +469,7 @@ pub async fn serve_command(
     pool_config: PostgresPoolConfig,
     distillery_access: DistilleryAccessConfig,
     rate_limit_config: DistilleryRateLimitConfig,
+    cors_config: DistilleryCorsConfig,
 ) -> anyhow::Result<()> {
     let relay_id = relay_id_opt.unwrap_or_else(Uuid::new_v4);
 
@@ -465,7 +485,7 @@ pub async fn serve_command(
         replication_worker(worker_state).await;
     });
 
-    let app = relay_app(state, distillery_access, rate_limit_config);
+    let app = relay_app(state, distillery_access, rate_limit_config, cors_config);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("server (ID: {}) listening on {}", relay_id, addr);
@@ -481,6 +501,7 @@ pub async fn serve_distillery_command(
     port: u16,
     distillery_access: DistilleryAccessConfig,
     rate_limit_config: DistilleryRateLimitConfig,
+    cors_config: DistilleryCorsConfig,
 ) -> anyhow::Result<()> {
     let legacy_limiter = DistilleryRateLimiter::new(rate_limit_config.clone());
     let versioned_limiter = DistilleryRateLimiter::new(rate_limit_config);
@@ -489,16 +510,22 @@ pub async fn serve_distillery_command(
         .route("/health", get(health))
         .nest(
             "/distillery",
-            rate_limited_distillery_routes(
-                protected_distillery_routes(distillery_access.clone()),
-                legacy_limiter,
+            cors_enabled_distillery_routes(
+                rate_limited_distillery_routes(
+                    protected_distillery_routes(distillery_access.clone()),
+                    legacy_limiter,
+                ),
+                &cors_config,
             ),
         )
         .nest(
             "/distillery/v1",
-            rate_limited_distillery_routes(
-                versioned_distillery_routes(distillery_access, "v1"),
-                versioned_limiter,
+            cors_enabled_distillery_routes(
+                rate_limited_distillery_routes(
+                    versioned_distillery_routes(distillery_access, "v1"),
+                    versioned_limiter,
+                ),
+                &cors_config,
             ),
         )
         .layer(middleware::from_fn(observe_http_request));
@@ -680,6 +707,7 @@ mod tests {
             test_state(),
             DistilleryAccessConfig::new(Some("secret-token".to_string())),
             DistilleryRateLimitConfig::default(),
+            DistilleryCorsConfig::default(),
         );
 
         let response = app
@@ -896,5 +924,39 @@ mod tests {
 
         assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(second.headers().contains_key("retry-after"));
+    }
+
+    #[tokio::test]
+    async fn cors_allows_configured_origin_for_distillery_routes() {
+        let app = Router::new().nest(
+            "/distillery",
+            cors_enabled_distillery_routes(
+                protected_distillery_routes(DistilleryAccessConfig::default()),
+                &DistilleryCorsConfig::new(vec!["https://staging.meinn.app".to_string()]),
+            ),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/distillery/rank")
+                    .header("origin", "https://staging.meinn.app")
+                    .header("access-control-request-method", "POST")
+                    .header("access-control-request-headers", "content-type,authorization")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("https://staging.meinn.app")
+        );
     }
 }

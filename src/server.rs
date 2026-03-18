@@ -29,6 +29,7 @@ use crate::{
         rank_from_events_handler,
     },
     ingestion::IngestionError,
+    observability::observe_http_request,
 };
 
 #[derive(Deserialize)]
@@ -126,6 +127,7 @@ fn relay_app(state: AppState, distillery_access: DistilleryAccessConfig) -> Rout
         .route("/relay/replicate", post(replicate_handler))
         .route("/relay/peers", get(peers_handler))
         .with_state(state)
+        .layer(middleware::from_fn(observe_http_request))
 }
 
 async fn push_handler(
@@ -425,7 +427,8 @@ pub async fn serve_distillery_command(
 ) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
-        .merge(protected_distillery_routes(distillery_access));
+        .merge(protected_distillery_routes(distillery_access))
+        .layer(middleware::from_fn(observe_http_request));
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("distillery-only server listening on {}", addr);
@@ -615,5 +618,58 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn observability_assigns_request_id_when_missing() {
+        let app = Router::new()
+            .route("/health", get(health))
+            .merge(protected_distillery_routes(DistilleryAccessConfig::default()))
+            .layer(middleware::from_fn(observe_http_request));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key("x-request-id"));
+    }
+
+    #[tokio::test]
+    async fn observability_preserves_client_request_id() {
+        let app = Router::new()
+            .route("/health", get(health))
+            .merge(protected_distillery_routes(DistilleryAccessConfig::default()))
+            .layer(middleware::from_fn(observe_http_request));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .header("x-request-id", "req-123")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("req-123")
+        );
     }
 }

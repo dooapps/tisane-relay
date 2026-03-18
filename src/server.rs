@@ -31,6 +31,7 @@ use crate::{
     },
     ingestion::IngestionError,
     observability::{observe_http_request, stamp_contract_version},
+    rate_limit::{DistilleryRateLimitConfig, DistilleryRateLimiter, enforce_distillery_rate_limit},
 };
 
 #[derive(Deserialize)]
@@ -119,6 +120,16 @@ fn protected_runtime_distillery_routes(config: DistilleryAccessConfig) -> Router
     ))
 }
 
+fn rate_limited_distillery_routes<S>(routes: Router<S>, limiter: DistilleryRateLimiter) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    routes.route_layer(middleware::from_fn_with_state(
+        limiter,
+        enforce_distillery_rate_limit,
+    ))
+}
+
 fn versioned_distillery_routes<S>(
     config: DistilleryAccessConfig,
     version: &'static str,
@@ -152,18 +163,31 @@ fn versioned_runtime_distillery_routes(
         ))
 }
 
-fn relay_app(state: AppState, distillery_access: DistilleryAccessConfig) -> Router {
+fn relay_app(
+    state: AppState,
+    distillery_access: DistilleryAccessConfig,
+    rate_limit_config: DistilleryRateLimitConfig,
+) -> Router {
+    let legacy_limiter = DistilleryRateLimiter::new(rate_limit_config.clone());
+    let versioned_limiter = DistilleryRateLimiter::new(rate_limit_config);
+
     Router::new()
         .route("/health", get(health))
         .nest(
             "/distillery",
-            protected_distillery_routes(distillery_access.clone())
-                .merge(protected_runtime_distillery_routes(distillery_access.clone())),
+            rate_limited_distillery_routes(
+                protected_distillery_routes(distillery_access.clone())
+                    .merge(protected_runtime_distillery_routes(distillery_access.clone())),
+                legacy_limiter,
+            ),
         )
         .nest(
             "/distillery/v1",
-            versioned_distillery_routes(distillery_access.clone(), "v1")
-                .merge(versioned_runtime_distillery_routes(distillery_access, "v1")),
+            rate_limited_distillery_routes(
+                versioned_distillery_routes(distillery_access.clone(), "v1")
+                    .merge(versioned_runtime_distillery_routes(distillery_access, "v1")),
+                versioned_limiter,
+            ),
         )
         .route("/relay/push", post(push_handler))
         .route("/relay/pull", get(pull_handler))
@@ -425,6 +449,7 @@ pub async fn serve_command(
     relay_id_opt: Option<Uuid>,
     pool_config: PostgresPoolConfig,
     distillery_access: DistilleryAccessConfig,
+    rate_limit_config: DistilleryRateLimitConfig,
 ) -> anyhow::Result<()> {
     let relay_id = relay_id_opt.unwrap_or_else(Uuid::new_v4);
 
@@ -440,7 +465,7 @@ pub async fn serve_command(
         replication_worker(worker_state).await;
     });
 
-    let app = relay_app(state, distillery_access);
+    let app = relay_app(state, distillery_access, rate_limit_config);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("server (ID: {}) listening on {}", relay_id, addr);
@@ -455,16 +480,26 @@ pub async fn serve_command(
 pub async fn serve_distillery_command(
     port: u16,
     distillery_access: DistilleryAccessConfig,
+    rate_limit_config: DistilleryRateLimitConfig,
 ) -> anyhow::Result<()> {
+    let legacy_limiter = DistilleryRateLimiter::new(rate_limit_config.clone());
+    let versioned_limiter = DistilleryRateLimiter::new(rate_limit_config);
+
     let app = Router::new()
         .route("/health", get(health))
         .nest(
             "/distillery",
-            protected_distillery_routes(distillery_access.clone()),
+            rate_limited_distillery_routes(
+                protected_distillery_routes(distillery_access.clone()),
+                legacy_limiter,
+            ),
         )
         .nest(
             "/distillery/v1",
-            versioned_distillery_routes(distillery_access, "v1"),
+            rate_limited_distillery_routes(
+                versioned_distillery_routes(distillery_access, "v1"),
+                versioned_limiter,
+            ),
         )
         .layer(middleware::from_fn(observe_http_request));
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
@@ -644,6 +679,7 @@ mod tests {
         let app = relay_app(
             test_state(),
             DistilleryAccessConfig::new(Some("secret-token".to_string())),
+            DistilleryRateLimitConfig::default(),
         );
 
         let response = app
@@ -817,5 +853,48 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["default_version"], "v1");
         assert_eq!(payload["supported_versions"][0], "v1");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_returns_retry_after_when_capacity_is_exceeded() {
+        let app = Router::new().nest(
+            "/distillery",
+            rate_limited_distillery_routes(
+                protected_distillery_routes(DistilleryAccessConfig::default()),
+                DistilleryRateLimiter::new(DistilleryRateLimitConfig::new(Some(1), 60)),
+            ),
+        );
+
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "10.0.0.1")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first.status(), StatusCode::OK);
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", "10.0.0.1")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(second.headers().contains_key("retry-after"));
     }
 }

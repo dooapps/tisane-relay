@@ -45,6 +45,7 @@ pub mod distillery_bridge;
 pub mod distillery_runtime;
 pub mod ingestion;
 pub mod observability;
+pub mod rate_limit;
 pub mod server;
 pub mod storage;
 pub mod sync;

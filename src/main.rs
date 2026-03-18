@@ -4,6 +4,7 @@ use uuid::Uuid;
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db;
 use tisane_relay::auth::DistilleryAccessConfig;
+use tisane_relay::rate_limit::DistilleryRateLimitConfig;
 use tisane_relay::server::{serve_command, serve_distillery_command};
 
 #[derive(Parser, Debug)]
@@ -52,6 +53,14 @@ enum Commands {
         /// Optional API key required for distillery endpoints
         #[arg(long, env = "DISTILLERY_API_KEY")]
         distillery_api_key: Option<String>,
+
+        /// Optional per-window request limit for distillery endpoints
+        #[arg(long, env = "DISTILLERY_RATE_LIMIT_MAX_REQUESTS")]
+        distillery_rate_limit_max_requests: Option<u32>,
+
+        /// Window size in seconds for the distillery rate limit
+        #[arg(long, env = "DISTILLERY_RATE_LIMIT_WINDOW_SECS", default_value_t = 60)]
+        distillery_rate_limit_window_secs: u64,
     },
     /// Start only Distillery endpoints for local algorithm development
     ServeDistillery {
@@ -62,6 +71,14 @@ enum Commands {
         /// Optional API key required for distillery endpoints
         #[arg(long, env = "DISTILLERY_API_KEY")]
         distillery_api_key: Option<String>,
+
+        /// Optional per-window request limit for distillery endpoints
+        #[arg(long, env = "DISTILLERY_RATE_LIMIT_MAX_REQUESTS")]
+        distillery_rate_limit_max_requests: Option<u32>,
+
+        /// Window size in seconds for the distillery rate limit
+        #[arg(long, env = "DISTILLERY_RATE_LIMIT_WINDOW_SECS", default_value_t = 60)]
+        distillery_rate_limit_window_secs: u64,
     },
     /// Add a new peer
     AddPeer {
@@ -134,6 +151,8 @@ async fn main() -> anyhow::Result<()> {
             db_idle_timeout_secs,
             db_max_lifetime_secs,
             distillery_api_key,
+            distillery_rate_limit_max_requests,
+            distillery_rate_limit_window_secs,
         } => {
             serve_command(
                 port,
@@ -147,14 +166,28 @@ async fn main() -> anyhow::Result<()> {
                     max_lifetime_secs: db_max_lifetime_secs,
                 },
                 DistilleryAccessConfig::new(distillery_api_key),
+                DistilleryRateLimitConfig::new(
+                    distillery_rate_limit_max_requests,
+                    distillery_rate_limit_window_secs,
+                ),
             )
             .await?;
         }
         Commands::ServeDistillery {
             port,
             distillery_api_key,
+            distillery_rate_limit_max_requests,
+            distillery_rate_limit_window_secs,
         } => {
-            serve_distillery_command(port, DistilleryAccessConfig::new(distillery_api_key)).await?;
+            serve_distillery_command(
+                port,
+                DistilleryAccessConfig::new(distillery_api_key),
+                DistilleryRateLimitConfig::new(
+                    distillery_rate_limit_max_requests,
+                    distillery_rate_limit_window_secs,
+                ),
+            )
+            .await?;
         }
         Commands::AddPeer {
             url,

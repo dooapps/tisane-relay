@@ -5,6 +5,7 @@ use axum::{
     Json, Router,
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
+    middleware,
     response::IntoResponse,
     routing::{get, post},
 };
@@ -14,6 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
+    auth::{DistilleryAccessConfig, require_distillery_access},
     database::{PostgresPoolConfig, connect_pool},
     db,
     distillery_bridge::{
@@ -27,6 +29,7 @@ use crate::{
         rank_from_events_handler,
     },
     ingestion::IngestionError,
+    observability::observe_http_request,
 };
 
 #[derive(Deserialize)]
@@ -45,12 +48,11 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"status":"ok"})))
 }
 
-fn distillery_app<S>() -> Router<S>
+fn direct_distillery_routes<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
-        .route("/health", get(health))
         .route("/distillery/attention", post(attention_handler))
         .route("/distillery/discover", post(discover_handler))
         .route(
@@ -62,8 +64,8 @@ where
         .route("/distillery/rank", post(rank_handler))
 }
 
-fn relay_app(state: AppState) -> Router {
-    distillery_app()
+fn runtime_distillery_routes() -> Router<AppState> {
+    Router::new()
         .route(
             "/distillery/feed-from-events",
             post(feed_from_events_handler),
@@ -96,11 +98,36 @@ fn relay_app(state: AppState) -> Router {
             "/distillery/discover-from-events",
             post(discover_from_events_handler),
         )
+}
+
+fn protected_distillery_routes<S>(config: DistilleryAccessConfig) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    direct_distillery_routes().route_layer(middleware::from_fn_with_state(
+        config,
+        require_distillery_access,
+    ))
+}
+
+fn protected_runtime_distillery_routes(config: DistilleryAccessConfig) -> Router<AppState> {
+    runtime_distillery_routes().route_layer(middleware::from_fn_with_state(
+        config,
+        require_distillery_access,
+    ))
+}
+
+fn relay_app(state: AppState, distillery_access: DistilleryAccessConfig) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .merge(protected_distillery_routes(distillery_access.clone()))
+        .merge(protected_runtime_distillery_routes(distillery_access))
         .route("/relay/push", post(push_handler))
         .route("/relay/pull", get(pull_handler))
         .route("/relay/replicate", post(replicate_handler))
         .route("/relay/peers", get(peers_handler))
         .with_state(state)
+        .layer(middleware::from_fn(observe_http_request))
 }
 
 async fn push_handler(
@@ -366,6 +393,7 @@ pub async fn serve_command(
     database_url: String,
     relay_id_opt: Option<Uuid>,
     pool_config: PostgresPoolConfig,
+    distillery_access: DistilleryAccessConfig,
 ) -> anyhow::Result<()> {
     let relay_id = relay_id_opt.unwrap_or_else(Uuid::new_v4);
 
@@ -381,7 +409,7 @@ pub async fn serve_command(
         replication_worker(worker_state).await;
     });
 
-    let app = relay_app(state);
+    let app = relay_app(state, distillery_access);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("server (ID: {}) listening on {}", relay_id, addr);
@@ -393,8 +421,14 @@ pub async fn serve_command(
     Ok(())
 }
 
-pub async fn serve_distillery_command(port: u16) -> anyhow::Result<()> {
-    let app = distillery_app();
+pub async fn serve_distillery_command(
+    port: u16,
+    distillery_access: DistilleryAccessConfig,
+) -> anyhow::Result<()> {
+    let app = Router::new()
+        .route("/health", get(health))
+        .merge(protected_distillery_routes(distillery_access))
+        .layer(middleware::from_fn(observe_http_request));
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("distillery-only server listening on {}", addr);
@@ -404,4 +438,238 @@ pub async fn serve_distillery_command(port: u16) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use anyhow::Result;
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use chrono::{DateTime, Utc};
+    use tower::util::ServiceExt;
+
+    use crate::{
+        storage::{CandidateSignalStore, EventBatchStore, RelayStore},
+        db::{AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery, Event, EventInput, Peer},
+    };
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct TestStorage;
+
+    #[async_trait::async_trait]
+    impl CandidateSignalStore for TestStorage {
+        async fn aggregate_candidate_signals(
+            &self,
+            _query: &CandidateAggregationQuery,
+        ) -> Result<Vec<AggregatedCandidate>> {
+            Ok(Vec::new())
+        }
+
+        async fn aggregate_author_signals(
+            &self,
+            _query: &CandidateAggregationQuery,
+        ) -> Result<Vec<AggregatedAuthor>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EventBatchStore for TestStorage {
+        async fn insert_events(&self, _events: &[EventInput]) -> Result<Vec<i64>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RelayStore for TestStorage {
+        async fn fetch_events_since(&self, _since: i64, _limit: i64) -> Result<(Vec<Event>, i64)> {
+            Ok((Vec::new(), 0))
+        }
+
+        async fn fetch_healthy_peers(&self) -> Result<Vec<Peer>> {
+            Ok(Vec::new())
+        }
+
+        async fn validate_peer_token(&self, _token: &str) -> Result<Option<Peer>> {
+            Ok(None)
+        }
+
+        async fn update_peer_cursor(
+            &self,
+            _peer_id: Uuid,
+            _last_time: DateTime<Utc>,
+            _last_id: Uuid,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn fetch_replication_batch(
+            &self,
+            _last_time: DateTime<Utc>,
+            _last_id: Uuid,
+            _limit: i64,
+        ) -> Result<Vec<Event>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn rank_request_body() -> String {
+        serde_json::json!({
+            "surface": "discover",
+            "account_id": "acct-1",
+            "candidates": [
+                {
+                    "candidate_id": "content-a",
+                    "read_completed": 1,
+                    "citation_created": 0,
+                    "derivative_created": 0,
+                    "value_snapshot": 0.0
+                }
+            ]
+        })
+        .to_string()
+    }
+
+    fn test_state() -> AppState {
+        AppState::from_storage(Uuid::nil(), Arc::new(TestStorage))
+    }
+
+    #[tokio::test]
+    async fn distillery_routes_are_public_by_default() {
+        let app = Router::new()
+            .route("/health", get(health))
+            .merge(protected_distillery_routes(DistilleryAccessConfig::default()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn distillery_routes_require_token_when_configured() {
+        let app = Router::new()
+            .route("/health", get(health))
+            .merge(protected_distillery_routes(DistilleryAccessConfig::new(Some(
+                "secret-token".to_string(),
+            ))));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            payload["error"],
+            serde_json::Value::String("missing or invalid distillery token".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_distillery_routes_accept_bearer_token() {
+        let app = relay_app(
+            test_state(),
+            DistilleryAccessConfig::new(Some("secret-token".to_string())),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank-from-events")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "surface": "discover",
+                            "limit": 10
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn observability_assigns_request_id_when_missing() {
+        let app = Router::new()
+            .route("/health", get(health))
+            .merge(protected_distillery_routes(DistilleryAccessConfig::default()))
+            .layer(middleware::from_fn(observe_http_request));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().contains_key("x-request-id"));
+    }
+
+    #[tokio::test]
+    async fn observability_preserves_client_request_id() {
+        let app = Router::new()
+            .route("/health", get(health))
+            .merge(protected_distillery_routes(DistilleryAccessConfig::default()))
+            .layer(middleware::from_fn(observe_http_request));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/rank")
+                    .header("content-type", "application/json")
+                    .header("x-request-id", "req-123")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-request-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("req-123")
+        );
+    }
 }

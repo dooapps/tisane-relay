@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use tisane_relay::database::{PostgresPoolConfig, connect_pool};
 use tisane_relay::db;
+use tisane_relay::auth::DistilleryAccessConfig;
 use tisane_relay::server::{serve_command, serve_distillery_command};
 
 #[derive(Parser, Debug)]
@@ -47,12 +48,20 @@ enum Commands {
         /// Seconds before recycling a Postgres connection
         #[arg(long, env = "DB_MAX_LIFETIME_SECS", default_value_t = 1800)]
         db_max_lifetime_secs: u64,
+
+        /// Optional API key required for distillery endpoints
+        #[arg(long, env = "DISTILLERY_API_KEY")]
+        distillery_api_key: Option<String>,
     },
     /// Start only Distillery endpoints for local algorithm development
     ServeDistillery {
         /// Port to bind to (or use PORT env var)
         #[arg(long, env = "PORT", default_value_t = 8080)]
         port: u16,
+
+        /// Optional API key required for distillery endpoints
+        #[arg(long, env = "DISTILLERY_API_KEY")]
+        distillery_api_key: Option<String>,
     },
     /// Add a new peer
     AddPeer {
@@ -124,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
             db_acquire_timeout_secs,
             db_idle_timeout_secs,
             db_max_lifetime_secs,
+            distillery_api_key,
         } => {
             serve_command(
                 port,
@@ -136,11 +146,15 @@ async fn main() -> anyhow::Result<()> {
                     idle_timeout_secs: db_idle_timeout_secs,
                     max_lifetime_secs: db_max_lifetime_secs,
                 },
+                DistilleryAccessConfig::new(distillery_api_key),
             )
             .await?;
         }
-        Commands::ServeDistillery { port } => {
-            serve_distillery_command(port).await?;
+        Commands::ServeDistillery {
+            port,
+            distillery_api_key,
+        } => {
+            serve_distillery_command(port, DistilleryAccessConfig::new(distillery_api_key)).await?;
         }
         Commands::AddPeer {
             url,

@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use axum::{
     body::Body,
+    extract::State,
     http::{HeaderName, HeaderValue, Request},
     middleware::Next,
     response::Response,
@@ -10,6 +11,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const CONTRACT_VERSION_HEADER: HeaderName =
+    HeaderName::from_static("x-distillery-contract-version");
 
 pub async fn observe_http_request(mut request: Request<Body>, next: Next) -> Response {
     let request_id = request
@@ -56,5 +59,18 @@ pub async fn observe_http_request(mut request: Request<Body>, next: Next) -> Res
         );
     }
 
+    response
+}
+
+pub async fn stamp_contract_version(
+    State(version): State<&'static str>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        CONTRACT_VERSION_HEADER.clone(),
+        HeaderValue::from_static(version),
+    );
     response
 }

@@ -29,7 +29,7 @@ use crate::{
         rank_from_events_handler,
     },
     ingestion::IngestionError,
-    observability::observe_http_request,
+    observability::{observe_http_request, stamp_contract_version},
 };
 
 #[derive(Deserialize)]
@@ -53,51 +53,33 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
-        .route("/distillery/attention", post(attention_handler))
-        .route("/distillery/discover", post(discover_handler))
-        .route(
-            "/distillery/distribute-authors",
-            post(distribute_authors_handler),
-        )
-        .route("/distillery/distribute", post(distribute_handler))
-        .route("/distillery/rank-authors", post(rank_authors_handler))
-        .route("/distillery/rank", post(rank_handler))
+        .route("/attention", post(attention_handler))
+        .route("/discover", post(discover_handler))
+        .route("/distribute-authors", post(distribute_authors_handler))
+        .route("/distribute", post(distribute_handler))
+        .route("/rank-authors", post(rank_authors_handler))
+        .route("/rank", post(rank_handler))
 }
 
 fn runtime_distillery_routes() -> Router<AppState> {
     Router::new()
+        .route("/feed-from-events", post(feed_from_events_handler))
+        .route("/distribute-from-events", post(distribute_from_events_handler))
+        .route("/rank-from-events", post(rank_from_events_handler))
         .route(
-            "/distillery/feed-from-events",
-            post(feed_from_events_handler),
-        )
-        .route(
-            "/distillery/distribute-from-events",
-            post(distribute_from_events_handler),
-        )
-        .route(
-            "/distillery/rank-from-events",
-            post(rank_from_events_handler),
-        )
-        .route(
-            "/distillery/rank-authors-from-events",
+            "/rank-authors-from-events",
             post(rank_authors_from_events_handler),
         )
         .route(
-            "/distillery/distribute-authors-from-events",
+            "/distribute-authors-from-events",
             post(distribute_authors_from_events_handler),
         )
         .route(
-            "/distillery/discover-authors-from-events",
+            "/discover-authors-from-events",
             post(discover_authors_from_events_handler),
         )
-        .route(
-            "/distillery/attention-from-events",
-            post(attention_from_events_handler),
-        )
-        .route(
-            "/distillery/discover-from-events",
-            post(discover_from_events_handler),
-        )
+        .route("/attention-from-events", post(attention_from_events_handler))
+        .route("/discover-from-events", post(discover_from_events_handler))
 }
 
 fn protected_distillery_routes<S>(config: DistilleryAccessConfig) -> Router<S>
@@ -117,11 +99,52 @@ fn protected_runtime_distillery_routes(config: DistilleryAccessConfig) -> Router
     ))
 }
 
+fn versioned_distillery_routes<S>(
+    config: DistilleryAccessConfig,
+    version: &'static str,
+) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    direct_distillery_routes()
+        .route_layer(middleware::from_fn_with_state(
+            config,
+            require_distillery_access,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            version,
+            stamp_contract_version,
+        ))
+}
+
+fn versioned_runtime_distillery_routes(
+    config: DistilleryAccessConfig,
+    version: &'static str,
+) -> Router<AppState> {
+    runtime_distillery_routes()
+        .route_layer(middleware::from_fn_with_state(
+            config,
+            require_distillery_access,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            version,
+            stamp_contract_version,
+        ))
+}
+
 fn relay_app(state: AppState, distillery_access: DistilleryAccessConfig) -> Router {
     Router::new()
         .route("/health", get(health))
-        .merge(protected_distillery_routes(distillery_access.clone()))
-        .merge(protected_runtime_distillery_routes(distillery_access))
+        .nest(
+            "/distillery",
+            protected_distillery_routes(distillery_access.clone())
+                .merge(protected_runtime_distillery_routes(distillery_access.clone())),
+        )
+        .nest(
+            "/distillery/v1",
+            versioned_distillery_routes(distillery_access.clone(), "v1")
+                .merge(versioned_runtime_distillery_routes(distillery_access, "v1")),
+        )
         .route("/relay/push", post(push_handler))
         .route("/relay/pull", get(pull_handler))
         .route("/relay/replicate", post(replicate_handler))
@@ -427,7 +450,14 @@ pub async fn serve_distillery_command(
 ) -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
-        .merge(protected_distillery_routes(distillery_access))
+        .nest(
+            "/distillery",
+            protected_distillery_routes(distillery_access.clone()),
+        )
+        .nest(
+            "/distillery/v1",
+            versioned_distillery_routes(distillery_access, "v1"),
+        )
         .layer(middleware::from_fn(observe_http_request));
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -544,7 +574,10 @@ mod tests {
     async fn distillery_routes_are_public_by_default() {
         let app = Router::new()
             .route("/health", get(health))
-            .merge(protected_distillery_routes(DistilleryAccessConfig::default()));
+            .nest(
+                "/distillery",
+                protected_distillery_routes(DistilleryAccessConfig::default()),
+            );
 
         let response = app
             .oneshot(
@@ -565,9 +598,12 @@ mod tests {
     async fn distillery_routes_require_token_when_configured() {
         let app = Router::new()
             .route("/health", get(health))
-            .merge(protected_distillery_routes(DistilleryAccessConfig::new(Some(
-                "secret-token".to_string(),
-            ))));
+            .nest(
+                "/distillery",
+                protected_distillery_routes(DistilleryAccessConfig::new(Some(
+                    "secret-token".to_string(),
+                ))),
+            );
 
         let response = app
             .oneshot(
@@ -624,7 +660,10 @@ mod tests {
     async fn observability_assigns_request_id_when_missing() {
         let app = Router::new()
             .route("/health", get(health))
-            .merge(protected_distillery_routes(DistilleryAccessConfig::default()))
+            .nest(
+                "/distillery",
+                protected_distillery_routes(DistilleryAccessConfig::default()),
+            )
             .layer(middleware::from_fn(observe_http_request));
 
         let response = app
@@ -647,7 +686,10 @@ mod tests {
     async fn observability_preserves_client_request_id() {
         let app = Router::new()
             .route("/health", get(health))
-            .merge(protected_distillery_routes(DistilleryAccessConfig::default()))
+            .nest(
+                "/distillery",
+                protected_distillery_routes(DistilleryAccessConfig::default()),
+            )
             .layer(middleware::from_fn(observe_http_request));
 
         let response = app
@@ -670,6 +712,72 @@ mod tests {
                 .get("x-request-id")
                 .and_then(|value| value.to_str().ok()),
             Some("req-123")
+        );
+    }
+
+    #[tokio::test]
+    async fn versioned_distillery_routes_emit_contract_header() {
+        let app = Router::new().nest(
+            "/distillery/v1",
+            versioned_distillery_routes(DistilleryAccessConfig::default(), "v1"),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/v1/rank")
+                    .header("content-type", "application/json")
+                    .body(Body::from(rank_request_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-distillery-contract-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn versioned_runtime_distillery_routes_emit_contract_header() {
+        let app = Router::new()
+            .nest(
+                "/distillery/v1",
+                versioned_runtime_distillery_routes(DistilleryAccessConfig::default(), "v1"),
+            )
+            .with_state(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/distillery/v1/rank-from-events")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "surface": "discover",
+                            "limit": 10
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-distillery-contract-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("v1")
         );
     }
 }

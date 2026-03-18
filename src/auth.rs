@@ -1,11 +1,12 @@
 use axum::{
-    Json,
     body::Body,
     extract::State,
     http::{HeaderMap, Request, header::AUTHORIZATION},
     middleware::Next,
-    response::{IntoResponse, Response},
+    response::Response,
 };
+
+use crate::api::error_response;
 
 #[derive(Debug, Clone, Default)]
 pub struct DistilleryAccessConfig {
@@ -41,13 +42,11 @@ pub async fn require_distillery_access(
         return next.run(request).await;
     }
 
-    (
+    error_response(
         axum::http::StatusCode::UNAUTHORIZED,
-        Json(serde_json::json!({
-            "error": "missing or invalid distillery token"
-        })),
+        "distillery_auth_invalid",
+        "missing or invalid distillery token",
     )
-        .into_response()
 }
 
 fn extract_distillery_token(headers: &HeaderMap) -> Option<&str> {

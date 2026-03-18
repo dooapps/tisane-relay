@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
+    api::error_response,
     auth::{DistilleryAccessConfig, require_distillery_access},
     database::{PostgresPoolConfig, connect_pool},
     db,
@@ -178,11 +179,11 @@ async fn push_handler(
 ) -> impl IntoResponse {
     const MAX_BATCH_SIZE: usize = 100;
     if events.len() > MAX_BATCH_SIZE {
-        return (
+        return error_response(
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "batch size exceeds limit (100)"})),
-        )
-            .into_response();
+            "relay_batch_too_large",
+            "batch size exceeds limit (100)",
+        );
     }
 
     match state.ingestion_service.validate_and_insert(events).await {
@@ -212,11 +213,7 @@ async fn pull_handler(
             .into_response(),
         Err(e) => {
             error!("pull error: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "relay_pull_failed", e.to_string())
         }
     }
 }
@@ -229,29 +226,29 @@ async fn replicate_handler(
     let token = match headers.get("X-Peer-Token") {
         Some(v) => v.to_str().unwrap_or(""),
         None => {
-            return (
+            return error_response(
                 StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "missing X-Peer-Token"})),
-            )
-                .into_response();
+                "peer_token_missing",
+                "missing X-Peer-Token",
+            );
         }
     };
 
     let peer = match state.sync_service.authorize_peer(token).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            return (
+            return error_response(
                 StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "invalid peer token"})),
-            )
-                .into_response();
+                "peer_token_invalid",
+                "invalid peer token",
+            );
         }
         Err(e) => {
-            return (
+            return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response();
+                "peer_authorization_failed",
+                e.to_string(),
+            );
         }
     };
 
@@ -259,11 +256,11 @@ async fn replicate_handler(
         if let Ok(rid) = relay_id_val.to_str() {
             if rid == state.relay_id.to_string() {
                 warn!("Loop detected from peer {}", peer.peer_id);
-                return (
+                return error_response(
                     StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "loop detected: my own relay id"})),
-                )
-                    .into_response();
+                    "relay_loop_detected",
+                    "loop detected: my own relay id",
+                );
             }
         }
     }
@@ -272,11 +269,11 @@ async fn replicate_handler(
         if let Ok(hop_str) = hop_val.to_str() {
             if let Ok(hops) = hop_str.parse::<i32>() {
                 if hops > 3 {
-                    return (
+                    return error_response(
                         StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({"error": "max hops exceeded"})),
-                    )
-                        .into_response();
+                        "relay_max_hops_exceeded",
+                        "max hops exceeded",
+                    );
                 }
             }
         }
@@ -294,23 +291,15 @@ async fn replicate_handler(
 
 fn ingestion_error_response(error: IngestionError) -> axum::response::Response {
     match error {
-        IngestionError::BadRequest(message) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": message})),
-        )
-            .into_response(),
-        IngestionError::Unauthorized(message) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": message})),
-        )
-            .into_response(),
+        IngestionError::BadRequest(message) => {
+            error_response(StatusCode::BAD_REQUEST, "ingestion_invalid_request", message)
+        }
+        IngestionError::Unauthorized(message) => {
+            error_response(StatusCode::UNAUTHORIZED, "ingestion_unauthorized", message)
+        }
         IngestionError::Internal(message) => {
             error!("insert error: {}", message);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": message})),
-            )
-                .into_response()
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "ingestion_internal_error", message)
         }
     }
 }
@@ -318,11 +307,11 @@ fn ingestion_error_response(error: IngestionError) -> axum::response::Response {
 async fn peers_handler(State(state): State<AppState>) -> impl IntoResponse {
     match state.sync_service.healthy_peers().await {
         Ok(peers) => (StatusCode::OK, Json(peers)).into_response(),
-        Err(e) => (
+        Err(e) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+            "peer_listing_failed",
+            e.to_string(),
+        ),
     }
 }
 
@@ -641,7 +630,11 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
-            payload["error"],
+            payload["error"]["code"],
+            serde_json::Value::String("distillery_auth_invalid".to_string())
+        );
+        assert_eq!(
+            payload["error"]["message"],
             serde_json::Value::String("missing or invalid distillery token".to_string())
         );
     }

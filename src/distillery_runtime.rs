@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
+    api::error_response,
     application::{DistilleryEventQuery, DistributionPolicy},
     distillery_bridge::{AttentionMixPolicy, RecentAttentionContext},
 };
@@ -87,11 +88,11 @@ pub async fn rank_from_events_handler(
         .await
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => (
+        Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )
-            .into_response(),
+            "distillery_runtime_rank_failed",
+            error.to_string(),
+        ),
     }
 }
 
@@ -105,11 +106,11 @@ pub async fn distribute_from_events_handler(
         .await
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => (
+        Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )
-            .into_response(),
+            "distillery_runtime_distribute_failed",
+            error.to_string(),
+        ),
     }
 }
 
@@ -123,11 +124,11 @@ pub async fn rank_authors_from_events_handler(
         .await
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => (
+        Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )
-            .into_response(),
+            "distillery_runtime_rank_authors_failed",
+            error.to_string(),
+        ),
     }
 }
 
@@ -141,11 +142,11 @@ pub async fn distribute_authors_from_events_handler(
         .await
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => (
+        Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )
-            .into_response(),
+            "distillery_runtime_distribute_authors_failed",
+            error.to_string(),
+        ),
     }
 }
 
@@ -162,11 +163,11 @@ pub async fn attention_from_events_handler(
         .await
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => (
+        Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )
-            .into_response(),
+            "distillery_runtime_attention_failed",
+            error.to_string(),
+        ),
     }
 }
 
@@ -186,11 +187,11 @@ pub async fn discover_from_events_handler(
         .await
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(error) => (
+        Err(error) => error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": error.to_string() })),
-        )
-            .into_response(),
+            "distillery_runtime_discover_failed",
+            error.to_string(),
+        ),
     }
 }
 

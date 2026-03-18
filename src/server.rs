@@ -44,8 +44,26 @@ struct PullResp {
     next_cursor: i64,
 }
 
+#[derive(Serialize)]
+struct DistilleryContractManifest {
+    default_version: &'static str,
+    supported_versions: &'static [&'static str],
+    legacy_aliases: &'static [&'static str],
+}
+
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({"status":"ok"})))
+}
+
+async fn distillery_contracts() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(DistilleryContractManifest {
+            default_version: "v1",
+            supported_versions: &["v1"],
+            legacy_aliases: &["/distillery/rank", "/distillery/discover", "/distillery/feed-from-events"],
+        }),
+    )
 }
 
 fn direct_distillery_routes<S>() -> Router<S>
@@ -53,6 +71,7 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new()
+        .route("/contracts", get(distillery_contracts))
         .route("/attention", post(attention_handler))
         .route("/discover", post(discover_handler))
         .route("/distribute-authors", post(distribute_authors_handler))
@@ -779,5 +798,31 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("v1")
         );
+    }
+
+    #[tokio::test]
+    async fn contract_manifest_reports_v1_as_default() {
+        let app = Router::new().nest(
+            "/distillery",
+            protected_distillery_routes(DistilleryAccessConfig::default()),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/distillery/contracts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["default_version"], "v1");
+        assert_eq!(payload["supported_versions"][0], "v1");
     }
 }

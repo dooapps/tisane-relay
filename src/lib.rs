@@ -36,8 +36,8 @@ impl AppState {
     }
 }
 
-pub mod application;
 pub mod api;
+pub mod application;
 pub mod auth;
 pub mod cors;
 pub mod database;

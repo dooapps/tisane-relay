@@ -27,7 +27,9 @@ pub async fn observe_http_request(mut request: Request<Body>, next: Next) -> Res
     let path = request.uri().path().to_string();
 
     if let Ok(value) = HeaderValue::from_str(&request_id) {
-        request.headers_mut().insert(REQUEST_ID_HEADER.clone(), value);
+        request
+            .headers_mut()
+            .insert(REQUEST_ID_HEADER.clone(), value);
     }
 
     let started_at = Instant::now();
@@ -36,7 +38,9 @@ pub async fn observe_http_request(mut request: Request<Body>, next: Next) -> Res
     let status = response.status();
 
     if let Ok(value) = HeaderValue::from_str(&request_id) {
-        response.headers_mut().insert(REQUEST_ID_HEADER.clone(), value);
+        response
+            .headers_mut()
+            .insert(REQUEST_ID_HEADER.clone(), value);
     }
 
     if status.is_server_error() {

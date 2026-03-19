@@ -1,0 +1,2 @@
+ALTER TABLE peers
+ADD COLUMN IF NOT EXISTS owner_unit_refs TEXT[] NOT NULL DEFAULT '{}';

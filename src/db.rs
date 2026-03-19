@@ -45,6 +45,7 @@ pub struct Peer {
     pub peer_id: Uuid,
     pub url: String,
     pub shared_secret: String,
+    pub owner_unit_refs: Vec<String>,
     pub last_cursor_time: DateTime<Utc>,
     pub last_cursor_id: Uuid,
     pub health: String,
@@ -81,6 +82,24 @@ pub struct CandidateAggregationQuery {
     pub account_id: Option<String>,
     pub channel: Option<String>,
     pub limit: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ErrorSignalQuery {
+    pub since: i64,
+    pub limit: i64,
+    pub owner_unit_refs: Vec<String>,
+    pub source: Option<String>,
+    pub severity: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OwnedEventQuery {
+    pub since: i64,
+    pub limit: i64,
+    pub owner_unit_refs: Vec<String>,
+    pub event_types: Vec<String>,
 }
 
 pub async fn insert_events(pool: &PgPool, events: &[EventInput]) -> Result<Vec<i64>, sqlx::Error> {
@@ -151,11 +170,125 @@ pub async fn fetch_events_since(
     Ok((events, next_cursor))
 }
 
+pub async fn fetch_error_events(
+    pool: &PgPool,
+    query: &ErrorSignalQuery,
+) -> Result<(Vec<Event>, i64), sqlx::Error> {
+    let mut builder: QueryBuilder<'_, Postgres> = QueryBuilder::new(
+        "SELECT event_id, server_seq, author_pubkey, signature, payload_hash, device_id, author_id, content_id, event_type, payload_json, occurred_at, lamport FROM events WHERE server_seq > ",
+    );
+    builder.push_bind(query.since);
+    builder.push(" AND event_type = 'signal.error'");
+
+    if !query.owner_unit_refs.is_empty() {
+        builder.push(" AND payload_json ->> 'owner_unit_ref' = ANY(");
+        builder.push_bind(&query.owner_unit_refs);
+        builder.push(")");
+    }
+
+    if let Some(source) = query.source.as_deref() {
+        builder.push(" AND payload_json ->> 'source' = ");
+        builder.push_bind(source);
+    }
+
+    if let Some(severity) = query.severity.as_deref() {
+        builder.push(" AND payload_json ->> 'severity' = ");
+        builder.push_bind(severity);
+    }
+
+    if let Some(status) = query.status.as_deref() {
+        builder.push(" AND payload_json ->> 'status' = ");
+        builder.push_bind(status);
+    }
+
+    builder.push(" ORDER BY server_seq ASC LIMIT ");
+    builder.push_bind(query.limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
+
+    let mut events = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        let event = Event {
+            event_id: row.get::<Uuid, _>("event_id"),
+            server_seq: row.get::<i64, _>("server_seq"),
+            author_pubkey: row.get::<String, _>("author_pubkey"),
+            signature: row.get::<String, _>("signature"),
+            payload_hash: row.get::<String, _>("payload_hash"),
+            device_id: row.get::<Option<String>, _>("device_id"),
+            author_id: row.get::<Option<String>, _>("author_id"),
+            content_id: row.get::<Option<String>, _>("content_id"),
+            event_type: row.get::<Option<String>, _>("event_type"),
+            payload_json: row.get::<Option<serde_json::Value>, _>("payload_json"),
+            occurred_at: row.get::<Option<DateTime<Utc>>, _>("occurred_at"),
+            lamport: row.get::<Option<i64>, _>("lamport"),
+        };
+        events.push(event);
+    }
+
+    let next_cursor = events
+        .last()
+        .map(|event| event.server_seq)
+        .unwrap_or(query.since);
+    Ok((events, next_cursor))
+}
+
+pub async fn fetch_owned_events(
+    pool: &PgPool,
+    query: &OwnedEventQuery,
+) -> Result<(Vec<Event>, i64), sqlx::Error> {
+    let mut builder: QueryBuilder<'_, Postgres> = QueryBuilder::new(
+        "SELECT event_id, server_seq, author_pubkey, signature, payload_hash, device_id, author_id, content_id, event_type, payload_json, occurred_at, lamport FROM events WHERE server_seq > ",
+    );
+    builder.push_bind(query.since);
+
+    if !query.owner_unit_refs.is_empty() {
+        builder.push(" AND payload_json ->> 'owner_unit_ref' = ANY(");
+        builder.push_bind(&query.owner_unit_refs);
+        builder.push(")");
+    }
+
+    if !query.event_types.is_empty() {
+        builder.push(" AND event_type = ANY(");
+        builder.push_bind(&query.event_types);
+        builder.push(")");
+    }
+
+    builder.push(" ORDER BY server_seq ASC LIMIT ");
+    builder.push_bind(query.limit);
+
+    let rows = builder.build().fetch_all(pool).await?;
+
+    let mut events = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        let event = Event {
+            event_id: row.get::<Uuid, _>("event_id"),
+            server_seq: row.get::<i64, _>("server_seq"),
+            author_pubkey: row.get::<String, _>("author_pubkey"),
+            signature: row.get::<String, _>("signature"),
+            payload_hash: row.get::<String, _>("payload_hash"),
+            device_id: row.get::<Option<String>, _>("device_id"),
+            author_id: row.get::<Option<String>, _>("author_id"),
+            content_id: row.get::<Option<String>, _>("content_id"),
+            event_type: row.get::<Option<String>, _>("event_type"),
+            payload_json: row.get::<Option<serde_json::Value>, _>("payload_json"),
+            occurred_at: row.get::<Option<DateTime<Utc>>, _>("occurred_at"),
+            lamport: row.get::<Option<i64>, _>("lamport"),
+        };
+        events.push(event);
+    }
+
+    let next_cursor = events
+        .last()
+        .map(|event| event.server_seq)
+        .unwrap_or(query.since);
+    Ok((events, next_cursor))
+}
+
 // ----- PEER & REPLICATION QUERIES -----
 
 // Fetch all healthy peers
 pub async fn fetch_healthy_peers(pool: &PgPool) -> Result<Vec<Peer>, sqlx::Error> {
-    sqlx::query_as::<_, Peer>("SELECT peer_id, url, shared_secret, last_cursor_time, last_cursor_id, health FROM peers WHERE health = 'healthy' OR health = 'unknown'")
+    sqlx::query_as::<_, Peer>("SELECT peer_id, url, shared_secret, owner_unit_refs, last_cursor_time, last_cursor_id, health FROM peers WHERE health = 'healthy' OR health = 'unknown'")
         .fetch_all(pool)
         .await
 }
@@ -163,7 +296,7 @@ pub async fn fetch_healthy_peers(pool: &PgPool) -> Result<Vec<Peer>, sqlx::Error
 // Fetch all peers (for admin listing)
 pub async fn fetch_all_peers(pool: &PgPool) -> Result<Vec<Peer>, sqlx::Error> {
     sqlx::query_as::<_, Peer>(
-        "SELECT peer_id, url, shared_secret, last_cursor_time, last_cursor_id, health FROM peers",
+        "SELECT peer_id, url, shared_secret, owner_unit_refs, last_cursor_time, last_cursor_id, health FROM peers",
     )
     .fetch_all(pool)
     .await
@@ -174,6 +307,7 @@ pub async fn add_peer(
     pool: &PgPool,
     url: String,
     shared_secret: String,
+    owner_unit_refs: Vec<String>,
 ) -> Result<Uuid, sqlx::Error> {
     let peer_id = Uuid::new_v4();
     // Default to UNIX epoch to avoid 'infinity' parsing issues in chrono
@@ -182,11 +316,12 @@ pub async fn add_peer(
         .with_timezone(&Utc);
 
     sqlx::query(
-        "INSERT INTO peers (peer_id, url, shared_secret, last_cursor_time) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO peers (peer_id, url, shared_secret, owner_unit_refs, last_cursor_time) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(peer_id)
     .bind(url)
     .bind(shared_secret)
+    .bind(owner_unit_refs)
     .bind(default_time)
     .execute(pool)
     .await?;
@@ -204,7 +339,7 @@ pub async fn remove_peer(pool: &PgPool, peer_id: Uuid) -> Result<bool, sqlx::Err
 
 // Validate a peer token (returns the Peer if found and authorized)
 pub async fn validate_peer_token(pool: &PgPool, token: &str) -> Result<Option<Peer>, sqlx::Error> {
-    sqlx::query_as::<_, Peer>("SELECT peer_id, url, shared_secret, last_cursor_time, last_cursor_id, health FROM peers WHERE shared_secret = $1")
+    sqlx::query_as::<_, Peer>("SELECT peer_id, url, shared_secret, owner_unit_refs, last_cursor_time, last_cursor_id, health FROM peers WHERE shared_secret = $1")
         .bind(token)
         .fetch_optional(pool)
         .await

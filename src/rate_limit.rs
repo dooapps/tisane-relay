@@ -65,10 +65,12 @@ impl DistilleryRateLimiter {
         let now = Instant::now();
         let window = Duration::from_secs(self.config.window_seconds);
         let mut state = self.state.lock().expect("rate limit mutex poisoned");
-        let entry = state.entry(key.to_string()).or_insert_with(|| RateLimitEntry {
-            window_started_at: now,
-            request_count: 0,
-        });
+        let entry = state
+            .entry(key.to_string())
+            .or_insert_with(|| RateLimitEntry {
+                window_started_at: now,
+                request_count: 0,
+            });
 
         if now.duration_since(entry.window_started_at) >= window {
             entry.window_started_at = now;
@@ -77,7 +79,11 @@ impl DistilleryRateLimiter {
 
         if entry.request_count >= max_requests {
             let elapsed = now.duration_since(entry.window_started_at);
-            let retry_after = self.config.window_seconds.saturating_sub(elapsed.as_secs()).max(1);
+            let retry_after = self
+                .config
+                .window_seconds
+                .saturating_sub(elapsed.as_secs())
+                .max(1);
             return RateLimitDecision::Limited { retry_after };
         }
 
@@ -152,7 +158,9 @@ fn forwarded_for(headers: &HeaderMap) -> Option<String> {
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::{DistilleryRateLimitConfig, DistilleryRateLimiter, RateLimitDecision, request_identity};
+    use super::{
+        DistilleryRateLimitConfig, DistilleryRateLimiter, RateLimitDecision, request_identity,
+    };
 
     #[test]
     fn identity_prefers_distillery_key_over_forwarded_for() {
@@ -171,7 +179,9 @@ mod tests {
         assert_eq!(limiter.evaluate("client-a"), RateLimitDecision::Allowed);
         assert!(matches!(
             limiter.evaluate("client-a"),
-            RateLimitDecision::Limited { retry_after: 1..=60 }
+            RateLimitDecision::Limited {
+                retry_after: 1..=60
+            }
         ));
     }
 }

@@ -62,7 +62,10 @@ fn extract_distillery_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn parse_bearer_token(value: &str) -> Option<&str> {
-    value.strip_prefix("Bearer ").map(str::trim).filter(|token| !token.is_empty())
+    value
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
 }
 
 #[cfg(test)]
@@ -71,8 +74,14 @@ mod tests {
 
     #[test]
     fn parses_bearer_token() {
-        assert_eq!(parse_bearer_token("Bearer secret-token"), Some("secret-token"));
-        assert_eq!(parse_bearer_token("Bearer   secret-token  "), Some("secret-token"));
+        assert_eq!(
+            parse_bearer_token("Bearer secret-token"),
+            Some("secret-token")
+        );
+        assert_eq!(
+            parse_bearer_token("Bearer   secret-token  "),
+            Some("secret-token")
+        );
         assert_eq!(parse_bearer_token("Basic secret-token"), None);
         assert_eq!(parse_bearer_token("Bearer "), None);
     }

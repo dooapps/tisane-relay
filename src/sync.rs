@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::{
-    db::{Event, Peer},
+    db::{ErrorSignalQuery, Event, OwnedEventQuery, Peer},
     storage::RelayStore,
 };
 
@@ -24,6 +24,14 @@ impl RelaySyncService {
 
     pub async fn pull_since(&self, since: i64, limit: i64) -> Result<(Vec<Event>, i64)> {
         self.store.fetch_events_since(since, limit).await
+    }
+
+    pub async fn error_batch(&self, query: &ErrorSignalQuery) -> Result<(Vec<Event>, i64)> {
+        self.store.fetch_error_events(query).await
+    }
+
+    pub async fn owned_batch(&self, query: &OwnedEventQuery) -> Result<(Vec<Event>, i64)> {
+        self.store.fetch_owned_events(query).await
     }
 
     pub async fn healthy_peers(&self) -> Result<Vec<Peer>> {

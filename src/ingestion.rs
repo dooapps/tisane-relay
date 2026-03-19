@@ -59,6 +59,7 @@ fn validate_value_protocol_event(event: &db::EventInput) -> Result<(), Ingestion
     };
 
     match event_type {
+        "signal.error" => validate_error_signal_event(event)?,
         "read.completed" | "derivative.created" | "citation.created" | "value.snapshot" => {
             let Some(payload) = &event.payload_json else {
                 return Err(IngestionError::BadRequest(format!(
@@ -94,6 +95,66 @@ fn validate_value_protocol_event(event: &db::EventInput) -> Result<(), Ingestion
     }
 
     Ok(())
+}
+
+fn validate_error_signal_event(event: &db::EventInput) -> Result<(), IngestionError> {
+    let Some(payload) = &event.payload_json else {
+        return Err(IngestionError::BadRequest(
+            "missing payload for event type 'signal.error'".to_string(),
+        ));
+    };
+
+    require_text_field(payload, "signal_id")?;
+    require_text_field(payload, "code")?;
+    require_text_field(payload, "summary")?;
+    require_text_field(payload, "source")?;
+    require_text_field(payload, "owner_unit_ref")?;
+
+    let severity = require_text_field(payload, "severity")?;
+    if !matches!(severity, "info" | "warning" | "error" | "critical") {
+        return Err(IngestionError::BadRequest(
+            "severity must be one of info, warning, error, critical".to_string(),
+        ));
+    }
+
+    let status = require_text_field(payload, "status")?;
+    if !matches!(status, "reported" | "acknowledged" | "resolved") {
+        return Err(IngestionError::BadRequest(
+            "status must be one of reported, acknowledged, resolved".to_string(),
+        ));
+    }
+
+    let has_occurred_at = payload
+        .get("occurred_at")
+        .and_then(|value| value.as_str())
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        || event.occurred_at.is_some();
+
+    if !has_occurred_at {
+        return Err(IngestionError::BadRequest(
+            "signal.error must include occurred_at in payload or envelope".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn require_text_field<'a>(
+    payload: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a str, IngestionError> {
+    payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            IngestionError::BadRequest(format!(
+                "missing or empty {} for event type 'signal.error'",
+                key
+            ))
+        })
 }
 
 fn sign_and_validate_event(event: &mut db::EventInput) -> Result<(), IngestionError> {
@@ -158,6 +219,30 @@ mod tests {
             .validate_and_insert(vec![event])
             .await
             .expect_err("missing content_id should fail");
+
+        assert!(matches!(error, IngestionError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn rejects_error_signal_events_without_owner_unit_ref() {
+        let service = EventIngestionService::new(Arc::new(FakeEventBatchStore));
+        let event = signed_event(
+            "signal.error",
+            serde_json::json!({
+                "signal_id": "sig-1",
+                "code": "payment_failed",
+                "summary": "Payment failed",
+                "source": "mellis",
+                "severity": "error",
+                "status": "reported",
+                "occurred_at": Utc::now().to_rfc3339(),
+            }),
+        );
+
+        let error = service
+            .validate_and_insert(vec![event])
+            .await
+            .expect_err("missing owner_unit_ref should fail");
 
         assert!(matches!(error, IngestionError::BadRequest(_)));
     }

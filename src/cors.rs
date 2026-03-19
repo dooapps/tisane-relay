@@ -63,6 +63,7 @@ impl DistilleryCorsConfig {
                     CONTENT_TYPE,
                     AUTHORIZATION,
                     HeaderName::from_static("x-distillery-key"),
+                    HeaderName::from_static("x-peer-token"),
                     HeaderName::from_static("x-request-id"),
                 ])),
         )

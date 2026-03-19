@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
-use tisane_relay::database::{PostgresPoolConfig, connect_pool};
-use tisane_relay::db;
 use tisane_relay::auth::DistilleryAccessConfig;
 use tisane_relay::cors::DistilleryCorsConfig;
+use tisane_relay::database::{PostgresPoolConfig, connect_pool};
+use tisane_relay::db;
 use tisane_relay::rate_limit::DistilleryRateLimitConfig;
 use tisane_relay::server::{serve_command, serve_distillery_command};
 
@@ -97,6 +97,9 @@ enum Commands {
         /// Shared secret for authentication
         #[arg(long)]
         secret: String,
+        /// Authorized owner unit refs for selective delivery. Repeat the flag to add more scopes.
+        #[arg(long = "owner-unit-ref")]
+        owner_unit_refs: Vec<String>,
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
     },
@@ -115,20 +118,37 @@ enum Commands {
     },
 }
 
-async fn add_peer_command(url: String, secret: String, database_url: String) -> anyhow::Result<()> {
+async fn add_peer_command(
+    url: String,
+    secret: String,
+    owner_unit_refs: Vec<String>,
+    database_url: String,
+) -> anyhow::Result<()> {
     let pool = connect_pool(&database_url, PostgresPoolConfig::for_admin()).await?;
-    let id = db::add_peer(&pool, url.clone(), secret).await?;
-    println!("Added peer {} with ID {}", url, id);
+    let id = db::add_peer(&pool, url.clone(), secret, owner_unit_refs.clone()).await?;
+    println!(
+        "Added peer {} with ID {} and owner scopes {:?}",
+        url, id, owner_unit_refs
+    );
     Ok(())
 }
 
 async fn list_peers_command(database_url: String) -> anyhow::Result<()> {
     let pool = connect_pool(&database_url, PostgresPoolConfig::for_admin()).await?;
     let peers = db::fetch_all_peers(&pool).await?;
-    println!("{:<36} | {:<30} | {:<10}", "ID", "URL", "Health");
+    println!(
+        "{:<36} | {:<30} | {:<10} | {}",
+        "ID", "URL", "Health", "Owner scopes"
+    );
     println!("{}", "-".repeat(80));
     for p in peers {
-        println!("{} | {:<30} | {}", p.peer_id, p.url, p.health);
+        println!(
+            "{} | {:<30} | {:<10} | {}",
+            p.peer_id,
+            p.url,
+            p.health,
+            p.owner_unit_refs.join(",")
+        );
     }
     Ok(())
 }
@@ -205,9 +225,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::AddPeer {
             url,
             secret,
+            owner_unit_refs,
             database_url,
         } => {
-            add_peer_command(url, secret, database_url).await?;
+            add_peer_command(url, secret, owner_unit_refs, database_url).await?;
         }
         Commands::ListPeers { database_url } => {
             list_peers_command(database_url).await?;

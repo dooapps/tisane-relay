@@ -5,7 +5,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::db::{
-    self, AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery, Event, EventInput, Peer,
+    self, AggregatedAuthor, AggregatedCandidate, CandidateAggregationQuery, ErrorSignalQuery,
+    Event, EventInput, OwnedEventQuery, Peer,
 };
 
 #[async_trait]
@@ -29,6 +30,8 @@ pub trait EventBatchStore: Send + Sync {
 #[async_trait]
 pub trait RelayStore: Send + Sync {
     async fn fetch_events_since(&self, since: i64, limit: i64) -> Result<(Vec<Event>, i64)>;
+    async fn fetch_error_events(&self, query: &ErrorSignalQuery) -> Result<(Vec<Event>, i64)>;
+    async fn fetch_owned_events(&self, query: &OwnedEventQuery) -> Result<(Vec<Event>, i64)>;
     async fn fetch_healthy_peers(&self) -> Result<Vec<Peer>>;
     async fn validate_peer_token(&self, token: &str) -> Result<Option<Peer>>;
     async fn update_peer_cursor(
@@ -94,6 +97,18 @@ impl EventBatchStore for PostgresRelayStorage {
 impl RelayStore for PostgresRelayStorage {
     async fn fetch_events_since(&self, since: i64, limit: i64) -> Result<(Vec<Event>, i64)> {
         db::fetch_events_since(&self.pool, since, limit)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn fetch_error_events(&self, query: &ErrorSignalQuery) -> Result<(Vec<Event>, i64)> {
+        db::fetch_error_events(&self.pool, query)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn fetch_owned_events(&self, query: &OwnedEventQuery) -> Result<(Vec<Event>, i64)> {
+        db::fetch_owned_events(&self.pool, query)
             .await
             .map_err(Into::into)
     }

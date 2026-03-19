@@ -34,6 +34,53 @@ The `payload_hash` is calculated by applying **BLAKE3** to the stable string rep
 ]
 ```
 
+## Consumer Payloads
+
+`tisane-relay` transporta payload assinado, mas nao define schema de dominio para consumidores.
+
+Ele e agnostico.
+Nao valida regras de negocio da `Mellis`, nao define schema financeiro da `Mellis` e nao deve virar dono desses contratos.
+
+Se um payload financeiro precisar de validacao semantica, essa validacao deve acontecer dentro da `Mellis`.
+
+Regra de ouro do canal agnostico de erro:
+
+- estado esperado de negocio nao entra no canal agnostico
+- falha operacional, contratual ou de integracao entra
+
+## Scoped delivery for peers
+
+`tisane-relay` distribui eventos para peers autenticados.
+Para leitura seletiva de `signal.error`, o contrato agora e:
+
+- `owner_unit_ref` e a chave de roteamento
+- `X-Peer-Token` autentica o peer
+- `owner_unit_refs` configurado no peer define o escopo autorizado
+- o filtro acontece no servidor, nao no cliente
+
+Implicacoes praticas:
+
+- `GET /relay/errors` exige `X-Peer-Token`
+- `GET /relay/owned` exige `X-Peer-Token`
+- o peer so recebe `signal.error` cujo `owner_unit_ref` pertence ao seu escopo
+- o peer tambem pode ler eventos de negocio com `owner_unit_ref` por `GET /relay/owned`
+- a replicacao entre relays tambem filtra `signal.error` por `owner_unit_refs`
+
+Adicionar peer com escopo explicito:
+
+```bash
+cargo run -- add-peer \
+  --url http://meinn-relay.local:8080 \
+  --secret relay-secret \
+  --owner-unit-ref meinn.app \
+  --database-url "$DATABASE_URL"
+```
+
+Leitura recomendada:
+
+- [docs/OPAQUE_PAYLOADS.md](./docs/OPAQUE_PAYLOADS.md)
+- [docs/ERROR_SIGNALS.md](./docs/ERROR_SIGNALS.md)
+
 ## Running Tests
 
 Integration tests require a running Postgres instance. Set `DATABASE_URL` and run:

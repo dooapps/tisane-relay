@@ -1,3 +1,7 @@
 /target
+/target_*
+/target_phase1
+/target_phase2
+/target_phase2_app
 /.env
 **/*.DS_Store

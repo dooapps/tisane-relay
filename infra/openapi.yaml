@@ -64,6 +64,191 @@ paths:
         "400":
           description: Bad Request - Missing required fields or invalid hex
 
+  /distillery/rank:
+    post:
+      operationId: distilleryRank
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      parameters:
+        - in: body
+          name: request
+          required: true
+          schema:
+            type: object
+            required:
+              - candidates
+            properties:
+              surface:
+                type: string
+              account_id:
+                type: string
+              candidates:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - candidate_id
+                  properties:
+                    candidate_id:
+                      type: string
+                    read_completed:
+                      type: integer
+                    citation_created:
+                      type: integer
+                    derivative_created:
+                      type: integer
+                    value_snapshot:
+                      type: number
+      responses:
+        "200":
+          description: Ranked candidates
+
+  /distillery/distribute:
+    post:
+      operationId: distilleryDistribute
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      parameters:
+        - in: body
+          name: request
+          required: true
+          schema:
+            type: object
+            required:
+              - candidates
+            properties:
+              surface:
+                type: string
+              account_id:
+                type: string
+              slot_count:
+                type: integer
+              max_per_author:
+                type: integer
+              max_per_channel:
+                type: integer
+              candidates:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - candidate_id
+                  properties:
+                    candidate_id:
+                      type: string
+                    author_id:
+                      type: string
+                    channel:
+                      type: string
+                    read_completed:
+                      type: integer
+                    citation_created:
+                      type: integer
+                    derivative_created:
+                      type: integer
+                    value_snapshot:
+                      type: number
+      responses:
+        "200":
+          description: Distributed slots
+
+  /distillery/rank-from-events:
+    post:
+      operationId: distilleryRankFromEvents
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      parameters:
+        - in: body
+          name: request
+          required: true
+          schema:
+            type: object
+            properties:
+              surface:
+                type: string
+              account_id:
+                type: string
+              channel:
+                type: string
+              since_hours:
+                type: integer
+              limit:
+                type: integer
+      responses:
+        "200":
+          description: Ranked candidates derived from relay events
+
+  /distillery/feed-from-events:
+    post:
+      operationId: distilleryFeedFromEvents
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      parameters:
+        - in: body
+          name: request
+          required: true
+          schema:
+            type: object
+            properties:
+              surface:
+                type: string
+              account_id:
+                type: string
+              channel:
+                type: string
+              slot_count:
+                type: integer
+              max_per_author:
+                type: integer
+              max_per_channel:
+                type: integer
+              since_hours:
+                type: integer
+              limit:
+                type: integer
+      responses:
+        "200":
+          description: Canonical feed derived from relay events
+        "500":
+          description: Failed to aggregate relay events
+
+  /distillery/distribute-from-events:
+    post:
+      operationId: distilleryDistributeFromEvents
+      x-google-backend:
+        address: https://tisane-relay-qsp3ipbqma-uc.a.run.app
+        protocol: "h2"
+      parameters:
+        - in: body
+          name: request
+          required: true
+          schema:
+            type: object
+            properties:
+              surface:
+                type: string
+              account_id:
+                type: string
+              channel:
+                type: string
+              slot_count:
+                type: integer
+              max_per_author:
+                type: integer
+              max_per_channel:
+                type: integer
+              since_hours:
+                type: integer
+              limit:
+                type: integer
+      responses:
+        "200":
+          description: Distributed feed derived from relay events
+
   /relay/pull:
     get:
       operationId: relayPull

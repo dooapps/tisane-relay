@@ -5,8 +5,8 @@ use serde_json::Value;
 /// This function is shared between the relay and can be replicated in clients.
 pub fn compute_payload_hash(payload_json: &Option<Value>) -> String {
     let payload_bytes = if let Some(p) = payload_json.as_ref() {
-        // Use a stable JSON representation. 
-        // Note: For true canonicalization, one might use a specific library, 
+        // Use a stable JSON representation.
+        // Note: For true canonicalization, one might use a specific library,
         // but p.to_string() is a good start if clients do the same.
         p.to_string().into_bytes()
     } else {
